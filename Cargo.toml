@@ -1,0 +1,15 @@
+[package]
+name = "fstreedb"
+version = "0.1.0"
+authors = ["Ilia Konnov <iliakonnov@gmail.com>"]
+edition = "2018"
+
+[lib]
+name = "fstreedb"
+path = "src/lib.rs"
+
+[[bin]]
+name = "explorer"
+path = "src/explorer/bin.rs"
+
+[dependencies]
