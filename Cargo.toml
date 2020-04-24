@@ -10,6 +10,10 @@ path = "src/lib.rs"
 
 [[bin]]
 name = "explorer"
-path = "src/explorer/bin.rs"
+path = "src/explorer/main.rs"
 
 [dependencies]
+static_assertions = "1.1"
+rmpv = { version="0.4", features=["with-serde"] }
+rmp = "0.8.9"
+serde = { version="1.0", features=["derive"] }
