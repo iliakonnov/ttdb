@@ -152,6 +152,7 @@ impl<T: Hash + Eq> LimitedReservoir<T> {
 mod test {
     // TODO: Not enough tests
     use super::*;
+    use fntools::value::ValueExt;
 
     #[test]
     fn empty() {
@@ -190,12 +191,8 @@ mod test {
         let inserted = empty.insert(42);
         assert_eq!((empty.total_count, empty.fullness), (4, 0));
 
-        let collected = {
-            // Sort because Reservoir don't care about IndexSet order. It is unspecified.
-            let mut t = empty.inner().iter().copied().collect::<Vec<_>>();
-            t.sort();
-            t
-        };
+        // Sort because Reservoir don't care about IndexSet order. It is unspecified.
+        let collected = empty.inner().iter().copied().collect::<Vec<_>>().also(|t| t.sort());
         match inserted {
             InsertionResult::Dropped { val } => {
                 assert_eq!(val, 42);

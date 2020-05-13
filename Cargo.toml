@@ -13,6 +13,9 @@ name = "explorer"
 path = "src/explorer/main.rs"
 
 [dependencies]
+# Fork of amazing [fntools](https://github.com/WaffleLapkin/fntools) by WaffleLapkin
+fntools = { path="../fntools" }
+
 static_assertions = "1.1"
 rmpv = { version="0.4", features=["with-serde"] }
 rmp = "0.8.9"

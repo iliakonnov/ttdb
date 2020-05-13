@@ -8,7 +8,7 @@
 #![feature(new_uninit)]
 #![allow(dead_code)]
 #![allow(incomplete_features)]
-mod hlist;
+pub mod hlist;
 mod versions;
 mod reservoir;
 mod path;
