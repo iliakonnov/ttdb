@@ -1,26 +1,26 @@
 /// Базовый трейт. Этот трейт реализуют все элементы цепочки версий.
 /// Если тип хочет его реализовать, то он должен написать,какой тип будет первой версией.
 /// По сути он означает, что тип принадлежит определенной цепочки версий.
-pub trait VersionBase: Sized
+pub trait Version: Sized
 where
     // Очевидно, первая версия цепочки тоже должна относиться к этой цепочке
-    // Поэтому требуем, чтобы она реализовывала VersionBase с таким же FirstVersion
-    Self::FirstVersion: VersionBase<FirstVersion=Self::FirstVersion>,
+    // Поэтому требуем, чтобы она реализовывала Version с таким же FirstVersion
+    Self::FirstVersion: Version<FirstVersion=Self::FirstVersion>,
     // И требуем, чтобы первая версия была обязательно отмечена как первая.
     // Это накладывает на неё необходимые ограничения, ибо не всякая версия может быть первой
     Self::FirstVersion: FirstVersion,
-    // В трейте Version находятся все необходимые мне функции
-    Self: Version
+    // Обязательно можно узнать номер текущей версии
+    Self: Counter
 {
     type FirstVersion;
 }
 
 /// Трейт, который означает, что этот элемент цепочки не последний.
 /// Позволяет узнать, какой элемент будет следующим
-pub trait NextVersionRef: VersionBase
+pub trait NextVersionRef: Version
 where
     // Следующая версия должна относиться к той же цепочке
-    Self::NextVersion: VersionBase<FirstVersion=Self::FirstVersion>,
+    Self::NextVersion: Version<FirstVersion=Self::FirstVersion>,
     // И причем след. версия должна указать в кач-ве предыдущей именно этот тип
     Self::NextVersion: PrevVersionRef<PrevVersion=Self>
 {
@@ -31,9 +31,9 @@ where
 pub trait PrevVersionRef
 where
     // Этот тип должен относиться к какой-нибудь цепочке
-    Self: VersionBase,
+    Self: Version,
     // А предыдущая версия должна относиться к той же цепочке, что и этот тип
-    Self::PrevVersion: VersionBase<FirstVersion=Self::FirstVersion>
+    Self::PrevVersion: Version<FirstVersion=Self::FirstVersion>
 {
     type PrevVersion;
 }
@@ -42,7 +42,7 @@ where
 pub auto trait FirstVersion
 where
     // Она первая тогда, когда в цепочке указано, что цепочка начинается с этой версии
-    Self: VersionBase<FirstVersion=Self>,
+    Self: Version<FirstVersion=Self>,
 {
 }
 
@@ -65,7 +65,7 @@ macro_rules! chain {
     (
         [$first:ty] $v1:ty => $v2:ty $(=> $other:ty)*
     ) => {
-        impl $crate::versions::VersionBase for $v1 {
+        impl $crate::versions::Version for $v1 {
             type FirstVersion = $first;
         }
         impl $crate::versions::NextVersionRef for $v1 {
@@ -80,29 +80,29 @@ macro_rules! chain {
     ( [$first:ty] $last:ty ) => {
         impl $crate::versions::LastVersion for $last {
         }
-        impl $crate::versions::VersionBase for $last {
+        impl $crate::versions::Version for $last {
             type FirstVersion = $first;
         }
     };
 }
 
 pub trait LastVersionRef where
-    Self: VersionBase,
+    Self: Version,
     // Последняя версия обязательно должна находиться в той же цепочке, что и эта версия
-    Self::LastVersion: VersionBase<FirstVersion=Self::FirstVersion>,
+    Self::LastVersion: Version<FirstVersion=Self::FirstVersion>,
     Self::LastVersion: LastVersion,
 {
     type LastVersion;
 }
 
 // Если тип не реализует NextVersionRef, то он последний в цепочке
-impl<T> LastVersionRef for T where T: VersionBase,
+impl<T> LastVersionRef for T where T: Version,
 {
     default type LastVersion = T;
 }
 
 // Если же тип не последний, то используется эта реализация
-impl<T> LastVersionRef for T where T: VersionBase + NextVersionRef,
+impl<T> LastVersionRef for T where T: Version + NextVersionRef,
 {
     type LastVersion = <T::NextVersion as LastVersionRef>::LastVersion;
 }
@@ -117,14 +117,14 @@ pub trait Counter {
 }
 
 // Аналогично приёму с LastVersionRef, по-умолчанию версия нулевая.
-impl<T> Counter for T where T: VersionBase {
+impl<T> Counter for T where T: Version {
     default const VERSION: usize = 0;
     default const TYPE_NAME: &'static str = std::any::type_name::<T>();
 }
 
 // У всех последующих версий они будут отличаться ровно на единицу
 impl<T> Counter for T where
-    T: VersionBase + PrevVersionRef,
+    T: Version + PrevVersionRef,
     <T as PrevVersionRef>::PrevVersion: Counter
 {
     const VERSION: usize = 1 + <T as PrevVersionRef>::PrevVersion::VERSION;
@@ -134,16 +134,13 @@ impl<T> Counter for T where
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub struct VersionNotFound;
 
-pub trait Version: Counter {
-}
-
 // Отдельный модуль, поскольку вспомогательные трейты должны там и остаться
 mod loader {
-    use super::{VersionBase, NextVersionRef, PrevVersionRef, LastVersionRef, Counter};
+    use super::{Version, NextVersionRef, PrevVersionRef, LastVersionRef, Counter};
     use std::error::Error;
     use std::boxed::Box;
 
-    pub trait Serde: VersionBase {
+    pub trait Serde: Version {
         fn save(self) -> Result<Vec<u8>, Box<dyn Error>>;
         fn load(data: Vec<u8>) -> Result<Self, Box<dyn Error>>;
     }
@@ -279,12 +276,12 @@ pub use loader::*;
 
 mod serde {
     use serde::{Deserialize, Serialize};
-    use super::{Serde, VersionBase};
+    use super::{Serde, Version};
     use std::error::Error;
 
     impl<T> Serde for T where
         T: for<'de> Deserialize<'de> + Serialize,
-        T: VersionBase
+        T: Version
     {
         fn save(self) -> Result<Vec<u8>, Box<dyn Error>> {
             let val = rmpv::ext::to_value(self)?;
@@ -304,6 +301,7 @@ mod serde {
 
 #[cfg(test)]
 mod test {
+    #![allow(clippy::blacklisted_name)]
     extern crate static_assertions as sa;
     use super::*;
 
@@ -312,10 +310,6 @@ mod test {
     #[derive(Debug, Eq, PartialEq)] struct Bar;
     #[derive(Debug, Eq, PartialEq)] struct Baz;
     chain!(Foo => Bar => Baz);
-
-    impl Version for Foo { }
-    impl Version for Bar { }
-    impl Version for Baz { }
 
     sa::const_assert_eq!(Foo::VERSION, 0);
     sa::const_assert_eq!(Bar::VERSION, 1);
@@ -332,9 +326,9 @@ mod test {
     // Проверяем, что все в одной конкретной цепочке
     sa::assert_type_eq_all!(
         Foo,
-        <Foo as VersionBase>::FirstVersion,
-        <Bar as VersionBase>::FirstVersion,
-        <Baz as VersionBase>::FirstVersion,
+        <Foo as Version>::FirstVersion,
+        <Bar as Version>::FirstVersion,
+        <Baz as Version>::FirstVersion,
     );
 
     sa::assert_type_eq_all!(
@@ -384,7 +378,7 @@ mod test {
 
     // Foo -> Bar
     impl Upgradeable for Bar {
-        fn upgrade(prev: Foo) -> Result<Self, Box<dyn Error>> {
+        fn upgrade(_prev: Foo) -> Result<Self, Box<dyn Error>> {
             Ok(Bar)
         }
     }
@@ -396,7 +390,7 @@ mod test {
         }
     }
     impl Upgradeable for Baz {
-        fn upgrade(prev: Bar) -> Result<Self, Box<dyn Error>> {
+        fn upgrade(_prev: Bar) -> Result<Self, Box<dyn Error>> {
             Ok(Baz)
         }
     }
