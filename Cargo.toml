@@ -3,6 +3,9 @@ name = "fstreedb"
 version = "0.1.0"
 authors = ["Ilia Konnov <iliakonnov@gmail.com>"]
 edition = "2018"
+description = "Database inspired by filesystem tree"
+license = "MIT"
+readme = "README.md"
 
 [lib]
 name = "fstreedb"

@@ -27,7 +27,7 @@ where
     type NextVersion;
 }
 
-/// То же, что и NextVersionRef, но для предыдущей версии
+/// То же, что и `NextVersionRef`, но для предыдущей версии
 pub trait PrevVersionRef
 where
     // Этот тип должен относиться к какой-нибудь цепочке
@@ -98,18 +98,18 @@ pub trait LastVersionRef where
 // Если тип не реализует NextVersionRef, то он последний в цепочке
 impl<T> LastVersionRef for T where T: Version,
 {
-    default type LastVersion = T;
+    default type LastVersion = Self;
 }
 
 // Если же тип не последний, то используется эта реализация
 impl<T> LastVersionRef for T where T: Version + NextVersionRef,
 {
-    type LastVersion = <T::NextVersion as LastVersionRef>::LastVersion;
+    type LastVersion = <<Self as NextVersionRef>::NextVersion as LastVersionRef>::LastVersion;
 }
 
 /// Трейт, при помощи которого будет реализован подсчет.
 /// Его нельзя реализовывать вручную, поскольку это может нарушить гарантии:
-/// - FirstVersion всегда имеет номер 0
+/// - `FirstVersion` всегда имеет номер 0
 /// - Все последующие версии отличаются ровно на единицу
 pub trait Counter {
     const VERSION: usize;
@@ -119,7 +119,7 @@ pub trait Counter {
 // Аналогично приёму с LastVersionRef, по-умолчанию версия нулевая.
 impl<T> Counter for T where T: Version {
     default const VERSION: usize = 0;
-    default const TYPE_NAME: &'static str = std::any::type_name::<T>();
+    default const TYPE_NAME: &'static str = std::any::type_name::<Self>();
 }
 
 // У всех последующих версий они будут отличаться ровно на единицу
@@ -127,8 +127,8 @@ impl<T> Counter for T where
     T: Version + PrevVersionRef,
     <T as PrevVersionRef>::PrevVersion: Counter
 {
-    const VERSION: usize = 1 + <T as PrevVersionRef>::PrevVersion::VERSION;
-    const TYPE_NAME: &'static str = std::any::type_name::<T>();
+    const VERSION: usize = 1 + <Self as PrevVersionRef>::PrevVersion::VERSION;
+    const TYPE_NAME: &'static str = std::any::type_name::<Self>();
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
@@ -225,7 +225,7 @@ mod loader {
 
     impl<T> Prev for T where T: Fallback {
         default fn load_prev(version: usize, data: Vec<u8>) -> Result<Self, LoadError> {
-            T::load_fallback(version, data)
+            Self::load_fallback(version, data)
         }
     }
 
@@ -239,9 +239,9 @@ mod loader {
                 Self::load(data).map_err(LoadError::Load)
             } else {
                 assert!(version < Self::VERSION);
-                let prev = T::PrevVersion::load_prev(version, data)
+                let prev = <Self as PrevVersionRef>::PrevVersion::load_prev(version, data)
                     .map_err(|e| fill_migration(e, version, Self::VERSION, Self::TYPE_NAME))?;
-                T::upgrade(prev).map_err(LoadError::Migration)
+                Self::upgrade(prev).map_err(LoadError::Migration)
             }
         }
     }
@@ -251,7 +251,7 @@ mod loader {
 
     impl<T> Next for T where T: Fallback {
         default fn load_next(version: usize, data: Vec<u8>) -> Result<Self, LoadError> {
-            T::load_fallback(version, data)
+            Self::load_fallback(version, data)
         }
     }
     impl<T> Next for T where
@@ -264,9 +264,9 @@ mod loader {
                 Self::load(data).map_err(LoadError::Load)
             } else {
                 assert!(version > Self::VERSION);
-                let next = T::NextVersion::load_next(version, data)
+                let next = <Self as NextVersionRef>::NextVersion::load_next(version, data)
                     .map_err(|e| fill_migration(e, version, Self::VERSION, Self::TYPE_NAME))?;
-                T::NextVersion::downgrade(next).map_err(LoadError::Migration)
+                <Self as NextVersionRef>::NextVersion::downgrade(next).map_err(LoadError::Migration)
             }
         }
     }
@@ -348,7 +348,7 @@ mod test {
 
         fn load(mut data: Vec<u8>) -> Result<Self, Box<dyn Error>> {
             match data.pop() {
-                Some(1) => Ok(Foo),
+                Some(1) => Ok(Self),
                 x => Err(format!("Error loading Foo: {:?}", x).into()),
             }
         }
@@ -359,7 +359,7 @@ mod test {
 
         fn load(mut data: Vec<u8>) -> Result<Self, Box<dyn Error>> {
             match data.pop() {
-                Some(2) => Ok(Bar),
+                Some(2) => Ok(Self),
                 x => Err(format!("Error loading Bar: {:?}", x).into()),
             }
         }
@@ -370,7 +370,7 @@ mod test {
 
         fn load(mut data: Vec<u8>) -> Result<Self, Box<dyn Error>> {
             match data.pop() {
-                Some(3) => Ok(Baz),
+                Some(3) => Ok(Self),
                 x => Err(format!("Error loading Baz: {:?}", x).into()),
             }
         }
@@ -379,7 +379,7 @@ mod test {
     // Foo -> Bar
     impl Upgradeable for Bar {
         fn upgrade(_prev: Foo) -> Result<Self, Box<dyn Error>> {
-            Ok(Bar)
+            Ok(Self)
         }
     }
 
@@ -391,11 +391,12 @@ mod test {
     }
     impl Upgradeable for Baz {
         fn upgrade(_prev: Bar) -> Result<Self, Box<dyn Error>> {
-            Ok(Baz)
+            Ok(Self)
         }
     }
 
     #[test]
+    #[allow(clippy::shadow_unrelated)]
     fn migrations() {
         // Upgrading
         let (version, data) = (Foo::VERSION, Foo.save().unwrap());

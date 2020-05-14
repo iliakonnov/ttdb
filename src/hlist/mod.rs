@@ -8,8 +8,10 @@ pub trait HList: Sized {
     }
 }
 
+#[derive(Debug, Copy, Clone)]
 pub struct Cons<T, L>(T, L);
 
+#[derive(Debug, Copy, Clone)]
 pub struct Nil;
 
 impl HList for Nil {
@@ -33,6 +35,7 @@ impl<> Unpack for Nil {
 // TODO: Probably Unpack implementation can be improved by removing macro usage at all.
 // But current is good enough
 #[macro_export]
+#[allow(non_snake_case)]
 macro_rules! HList {
     [] => {$crate::hlist::Nil};
     [$t:ty $(, $ts:ty)* $(,)?] => {$crate::hlist::Cons<$t, $crate::HList![$($ts),*]>};
@@ -59,12 +62,11 @@ pub trait SplitRes: HList {
 }
 
 impl SplitRes for Nil {
-    type Good = Nil;
-    type Fail = Nil;
+    type Good = Self;
+    type Fail = Self;
     fn split_res(self) -> (Self::Good, Self::Fail) {
-        (Nil, Nil)
+        (Self, Self)
     }
-
 }
 
 impl<T, E, L: SplitRes> SplitRes for Cons<Result<T, E>, L> {
@@ -111,10 +113,10 @@ impl<T, L: Length> Length for Cons<T, L> {
 }
 
 pub trait ToSlice: Homogenous+Length {
-    /// Panics if slice.len() < Self::LENGTH
+    /// Panics if `slice.len() < Self::LENGTH`
     fn init_slice(self, slice: &mut [MaybeUninit<Self::Value>]);
 
-    /// Panics if LEN != Self::LENGTH
+    /// Panics if `LEN != Self::LENGTH`
     fn into_array<const LEN: usize>(self) -> [Self::Value; LEN]
     {
         assert_eq!(LEN, Self::LENGTH);
@@ -123,19 +125,20 @@ pub trait ToSlice: Homogenous+Length {
         };
         self.init_slice(&mut data);
         let data: [Self::Value; LEN] = unsafe {
+            #[allow(trivial_casts)]
             (&data as *const _ as *const [Self::Value; LEN]).read()
         };
         data
     }
 
-    /// Guarantees that slice size equals to Self::LENGTH
+    /// Guarantees that slice size equals to `Self::LENGTH`
     fn into_slice(self) -> Box<[Self::Value]> {
         let mut slice = Box::new_uninit_slice(Self::LENGTH);
         self.init_slice(&mut slice);
         unsafe { slice.assume_init() }
     }
 
-    /// Guarantees that vector size equals to Self::LENGTH
+    /// Guarantees that vector size equals to `Self::LENGTH`
     fn into_vec(self) -> Vec<Self::Value>
     {
         self.into_slice().into_vec()

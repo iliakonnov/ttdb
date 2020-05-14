@@ -38,6 +38,7 @@ struct NodeRef<'a, Txn, Path, Out> {
 }
 
 impl<'a, T, P, O> NodeRef<'a, T, P, O> {
+    #![allow(clippy::missing_const_for_fn)]  // https://github.com/rust-lang/rust-clippy/issues/4979
     pub fn split(self) -> (T, O) {
         (self.txn, self.out)
     }

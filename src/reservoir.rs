@@ -6,7 +6,7 @@ use serde::{Serialize, Deserialize, Serializer, Deserializer};
 use std::borrow::Cow;
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Serialize, Deserialize)]
-pub enum ReservoirSize {
+pub enum Size {
     All,
     Maximum(usize)
 }
@@ -17,32 +17,32 @@ pub enum ReservoirSize {
     deserialize="T: Hash + Eq + Clone + for<'a> Deserialize<'a>"
 ))]
 pub enum Reservoir<T> {
-    Limited(LimitedReservoir<T>),
+    Limited(Limited<T>),
     Unlimited(IndexSet<T>)
 }
 
 impl<T: Hash + Eq> Reservoir<T> {
-    pub fn new(size: ReservoirSize, buf: IndexSet<T>) -> Self {
+    pub fn new(size: Size, buf: IndexSet<T>) -> Self {
         match size {
-            ReservoirSize::All => {
-                Reservoir::Unlimited(buf)
+            Size::All => {
+                Self::Unlimited(buf)
             },
-            ReservoirSize::Maximum(max) => {
-                Reservoir::Limited(LimitedReservoir::new(max, buf))
+            Size::Maximum(max) => {
+                Self::Limited(Limited::new(max, buf))
             },
         }
     }
 
     pub fn insert(&mut self, val: T) -> InsertionResult<T> {
         match self {
-            Reservoir::Unlimited(buf) => {
+            Self::Unlimited(buf) => {
                 if buf.insert(val) {
                     InsertionResult::Overwritten
                 } else {
                     InsertionResult::Inserted
                 }
             },
-            Reservoir::Limited(lim) => {
+            Self::Limited(lim) => {
                 lim.insert(val)
             },
         }
@@ -50,14 +50,14 @@ impl<T: Hash + Eq> Reservoir<T> {
 
     pub fn inner(&self) -> &IndexSet<T> {
         match self {
-            Reservoir::Limited(lim) => lim.inner(),
-            Reservoir::Unlimited(buf) => buf,
+            Self::Limited(lim) => lim.inner(),
+            Self::Unlimited(buf) => buf,
         }
     }
 }
 
 #[derive(Clone)]
-pub struct LimitedReservoir<T> {
+pub struct Limited<T> {
     rng: SmallRng,
     buf: IndexSet<T>,
     fullness: usize,  // How many space remaining until hitting cap
@@ -86,8 +86,8 @@ pub enum InsertionResult<T> {
     Inserted
 }
 
-impl<T> LimitedReservoir<T> {
-    pub fn inner(&self) -> &IndexSet<T> {
+impl<T> Limited<T> {
+    pub const fn inner(&self) -> &IndexSet<T> {
         &self.buf
     }
 
@@ -96,7 +96,7 @@ impl<T> LimitedReservoir<T> {
     }
 }
 
-impl<T: Hash + Eq> LimitedReservoir<T> {
+impl<T: Hash + Eq> Limited<T> {
     pub fn new(max: usize, buf: IndexSet<T>) -> Self {
         let total_count = buf.len();
         Self::with_count(max, buf, total_count)
@@ -159,7 +159,7 @@ struct ReservoirSerde<'a, T: Hash + Eq + Clone> {
     buf: Cow<'a, IndexSet<T>>,
 }
 
-impl<T: Serialize + Hash + Eq + Clone> Serialize for LimitedReservoir<T> {
+impl<T: Serialize + Hash + Eq + Clone> Serialize for Limited<T> {
     fn serialize<S>(&self, serializer: S) -> Result<<S as Serializer>::Ok, <S as Serializer>::Error> where
         S: Serializer {
         let temp: ReservoirSerde<T> = ReservoirSerde {
@@ -171,7 +171,7 @@ impl<T: Serialize + Hash + Eq + Clone> Serialize for LimitedReservoir<T> {
     }
 }
 
-impl<'de, T: Deserialize<'de> + Hash + Eq + Clone> Deserialize<'de> for LimitedReservoir<T> {
+impl<'de, T: Deserialize<'de> + Hash + Eq + Clone> Deserialize<'de> for Limited<T> {
     fn deserialize<D>(deserializer: D) -> Result<Self, <D as Deserializer<'de>>::Error> where
         D: Deserializer<'de> {
         let temp: ReservoirSerde<T> = ReservoirSerde::deserialize(deserializer)?;
@@ -188,7 +188,7 @@ mod test {
 
     #[test]
     fn empty() {
-        let empty = LimitedReservoir::new(42, IndexSet::<u8>::new());
+        let empty = Limited::new(42, IndexSet::<u8>::new());
         assert!(empty.inner().is_empty());
         assert_eq!(empty.max_size(), 42);
         assert_eq!(empty.total_count, 0);  // No items inserted
@@ -197,7 +197,7 @@ mod test {
 
     #[test]
     fn insert_one() {
-        let mut empty = LimitedReservoir::new(42, IndexSet::new());
+        let mut empty = Limited::new(42, IndexSet::new());
         assert!(matches!(empty.insert(7), InsertionResult::Inserted));
         assert_eq!(empty.inner().iter().collect::<Vec<_>>(), vec![&7]);
         assert_eq!(empty.max_size(), 42);
@@ -208,7 +208,7 @@ mod test {
     #[test]
     fn overfull() {
         // FIXME: Too complicated test because of randomness
-        let mut empty = LimitedReservoir::new(3, IndexSet::new());
+        let mut empty = Limited::new(3, IndexSet::new());
         assert_eq!((empty.total_count, empty.fullness), (0, 3));
 
         assert!(matches!(empty.insert(3), InsertionResult::Inserted));
@@ -244,11 +244,11 @@ mod test {
 
     #[test]
     fn serde_direct() {
-        let mut res = LimitedReservoir::new(3, IndexSet::new());
+        let mut res = Limited::new(3, IndexSet::new());
         res.insert(7);
 
         let ser = rmpv::ext::to_value(res).unwrap();
-        let de: LimitedReservoir<i32> = rmpv::ext::from_value(ser).unwrap();
+        let de: Limited<i32> = rmpv::ext::from_value(ser).unwrap();
         assert_eq!(de.buf.iter().collect::<Vec<_>>(), vec![&7]);
         assert_eq!(de.total_count, 1);
         assert_eq!(de.fullness, 2);
@@ -268,7 +268,7 @@ mod test {
 
     #[test]
     fn serde_reservoir() {
-        let lim = LimitedReservoir::new(3, IndexSet::new());
+        let lim = Limited::new(3, IndexSet::new());
         let mut res = Reservoir::Limited(lim);
         res.insert(7);
 
