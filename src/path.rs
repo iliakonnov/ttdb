@@ -2,11 +2,12 @@ use std::num::NonZeroU8;
 use indexmap::IndexSet;
 use std::hash::Hash;
 use crate::reservoir::{Reservoir, ReservoirSize};
+use serde::{Serialize, Deserialize};
 
-#[derive(Clone, Hash, Ord, PartialOrd, PartialEq, Eq)]
+#[derive(Clone, Hash, Ord, PartialOrd, PartialEq, Eq, Deserialize, Serialize)]
 pub struct PathSegment(Vec<NonZeroU8>);
 
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct ChildrenInfo {
     size: ReservoirSize,
     children: Reservoir<PathSegment>

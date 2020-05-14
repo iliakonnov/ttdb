@@ -2,28 +2,30 @@ use rand::rngs::SmallRng;
 use rand::{SeedableRng, Rng};
 use indexmap::IndexSet;
 use std::hash::Hash;
+use serde::{Serialize, Deserialize, Serializer, Deserializer};
+use std::borrow::Cow;
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub enum ReservoirSize {
     All,
     Maximum(usize)
 }
 
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(bound(
+    serialize="T: Hash + Eq + Clone + Serialize",
+    deserialize="T: Hash + Eq + Clone + for<'a> Deserialize<'a>"
+))]
 pub enum Reservoir<T> {
     Limited(LimitedReservoir<T>),
-    Unlimited {
-        buf: IndexSet<T>,
-    }
+    Unlimited(IndexSet<T>)
 }
 
 impl<T: Hash + Eq> Reservoir<T> {
     pub fn new(size: ReservoirSize, buf: IndexSet<T>) -> Self {
         match size {
             ReservoirSize::All => {
-                Reservoir::Unlimited {
-                    buf
-                }
+                Reservoir::Unlimited(buf)
             },
             ReservoirSize::Maximum(max) => {
                 Reservoir::Limited(LimitedReservoir::new(max, buf))
@@ -33,7 +35,7 @@ impl<T: Hash + Eq> Reservoir<T> {
 
     pub fn insert(&mut self, val: T) -> InsertionResult<T> {
         match self {
-            Reservoir::Unlimited { buf } => {
+            Reservoir::Unlimited(buf) => {
                 if buf.insert(val) {
                     InsertionResult::Overwritten
                 } else {
@@ -49,7 +51,7 @@ impl<T: Hash + Eq> Reservoir<T> {
     pub fn inner(&self) -> &IndexSet<T> {
         match self {
             Reservoir::Limited(lim) => lim.inner(),
-            Reservoir::Unlimited { buf } => buf,
+            Reservoir::Unlimited(buf) => buf,
         }
     }
 }
@@ -84,6 +86,16 @@ pub enum InsertionResult<T> {
     Inserted
 }
 
+impl<T> LimitedReservoir<T> {
+    pub fn inner(&self) -> &IndexSet<T> {
+        &self.buf
+    }
+
+    pub fn max_size(&self) -> usize {
+        self.buf.len() + self.fullness
+    }
+}
+
 impl<T: Hash + Eq> LimitedReservoir<T> {
     pub fn new(max: usize, buf: IndexSet<T>) -> Self {
         let total_count = buf.len();
@@ -106,20 +118,12 @@ impl<T: Hash + Eq> LimitedReservoir<T> {
         }
     }
 
-    pub fn inner(&self) -> &IndexSet<T> {
-        &self.buf
-    }
-
     pub fn insert(&mut self, val: T) -> InsertionResult<T> {
         self.total_count += 1;
         match self.fullness {
             0 => self.replace(val),
             _ => self.append(val)
         }
-    }
-
-    pub fn max_size(&self) -> usize {
-        self.buf.len() + self.fullness
     }
 
     fn replace(&mut self, val: T) -> InsertionResult<T> {
@@ -145,6 +149,34 @@ impl<T: Hash + Eq> LimitedReservoir<T> {
         self.buf.insert(val);
         self.fullness -= 1;
         InsertionResult::Inserted
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+struct ReservoirSerde<'a, T: Hash + Eq + Clone> {
+    total_count: usize,
+    max_size: usize,
+    buf: Cow<'a, IndexSet<T>>,
+}
+
+impl<T: Serialize + Hash + Eq + Clone> Serialize for LimitedReservoir<T> {
+    fn serialize<S>(&self, serializer: S) -> Result<<S as Serializer>::Ok, <S as Serializer>::Error> where
+        S: Serializer {
+        let temp: ReservoirSerde<T> = ReservoirSerde {
+            total_count: self.total_count,
+            max_size: self.max_size(),
+            buf: Cow::Borrowed(&self.buf)
+        };
+        temp.serialize(serializer)
+    }
+}
+
+impl<'de, T: Deserialize<'de> + Hash + Eq + Clone> Deserialize<'de> for LimitedReservoir<T> {
+    fn deserialize<D>(deserializer: D) -> Result<Self, <D as Deserializer<'de>>::Error> where
+        D: Deserializer<'de> {
+        let temp: ReservoirSerde<T> = ReservoirSerde::deserialize(deserializer)?;
+        // Expecting that temp.buf.is_owned(), but this is not required really
+        Ok(Self::with_count(temp.max_size, temp.buf.into_owned(), temp.total_count))
     }
 }
 
@@ -208,5 +240,41 @@ mod test {
             },
             x => panic!("empty.insert returned invalid value: {:?}", x)
         }
+    }
+
+    #[test]
+    fn serde_direct() {
+        let mut res = LimitedReservoir::new(3, IndexSet::new());
+        res.insert(7);
+
+        let ser = rmpv::ext::to_value(res).unwrap();
+        let de: LimitedReservoir<i32> = rmpv::ext::from_value(ser).unwrap();
+        assert_eq!(de.buf.iter().collect::<Vec<_>>(), vec![&7]);
+        assert_eq!(de.total_count, 1);
+        assert_eq!(de.fullness, 2);
+        assert_eq!(de.max_size(), 3);
+    }
+
+    #[test]
+    fn serde_unlimited() {
+        let mut res = Reservoir::Unlimited(IndexSet::new());
+        res.insert(7);
+
+        let ser = rmpv::ext::to_value(res).unwrap();
+        let de: Reservoir<i32> = rmpv::ext::from_value(ser).unwrap();
+        assert!(matches!(de, Reservoir::Unlimited(_)));
+        assert_eq!(de.inner().iter().collect::<Vec<_>>(), vec![&7]);
+    }
+
+    #[test]
+    fn serde_reservoir() {
+        let lim = LimitedReservoir::new(3, IndexSet::new());
+        let mut res = Reservoir::Limited(lim);
+        res.insert(7);
+
+        let ser = rmpv::ext::to_value(res).unwrap();
+        let de: Reservoir<i32> = rmpv::ext::from_value(ser).unwrap();
+        assert!(matches!(de, Reservoir::Limited(_)));
+        assert_eq!(de.inner().iter().collect::<Vec<_>>(), vec![&7]);
     }
 }
