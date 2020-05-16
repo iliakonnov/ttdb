@@ -7,7 +7,8 @@
     const_generics,
     maybe_uninit_extra,
     new_uninit,
-    vec_into_raw_parts
+    vec_into_raw_parts,
+    const_raw_ptr_deref
 )]
 #![warn(
     missing_docs,

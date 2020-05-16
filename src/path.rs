@@ -46,21 +46,13 @@ pub trait Path {
     fn into_segment(self) -> Segment;
 }
 
-pub trait ParentOf<Child: Path>: Path {}
-
-pub struct Root;
-
-impl Path for Root {
-    fn into_segment(self) -> Segment {
-        Segment(Vec::new())
-    }
-}
-
-impl<T: Path> ParentOf<T> for Root {}
+pub trait ParentOf<Child: Path + ?Sized>: Path {}
 
 mod collect {
     use super::*;
+    use crate::hlist::*;
 
+    // CollectHelper implemented only for HLists of Paths
     foldl_hlist! {
         pub trait CollectHelper |start, p: T| -> (PathBuf) where (T: Path) {
             start.0.push(p.into_segment());
@@ -68,7 +60,25 @@ mod collect {
         }
     }
 
-    pub trait Chain: CollectHelper {
+    // Does not guarantees that starts with Root
+    pub trait WeakChain: CollectHelper {
+    }
+
+    impl<P> WeakChain for Cons<P, Nil> where P: Path
+    {}
+
+    impl<P, C, R> WeakChain for Cons<P, Cons<C, R>> where
+        P: ParentOf<C>,
+        C: Path,
+        Cons<C, R>: WeakChain  // This bound is why WeakChain trait is required
+    {}
+
+    #[allow(clippy::doc_markdown)]
+    /// HList of Paths which starts with Root and each is ParenOf next path.
+    pub trait Chain: WeakChain {
+    }
+
+    impl<T> Chain for Cons<Root, T> where Cons<Root, T>: WeakChain {
     }
 
     pub fn collect<C: Chain>(chain: C) -> PathBuf {
@@ -77,3 +87,106 @@ mod collect {
 }
 
 pub use collect::{Chain, collect as collect_chain};
+
+/// Important root path.
+pub struct Root;
+
+impl Path for Root {
+    fn into_segment(self) -> Segment {
+        Segment(Vec::new())
+    }
+}
+
+/// Path that can contain anything. Can be placed at the root. Can be followed by anything
+pub struct Any(Segment);
+impl Path for Any {
+    fn into_segment(self) -> Segment {
+        Segment(vec![NonZeroU8::new(1).unwrap()])
+    }
+}
+
+// Anything can follow Any
+impl<T: Path> ParentOf<T> for Any {}
+impl ParentOf<Any> for Root {}
+
+#[macro_export]
+macro_rules! path {
+    // Only simple paths supported: they cannot contain any data.
+    ($($vis:vis struct $id:ident;)+) => {
+        $(
+            $vis struct $id;
+            $crate::path!(@impl for $id);
+        )+
+    };
+    (@impl for $id:ident) => {
+        impl $crate::path::Path for $id {
+            fn into_segment(self) -> Segment {
+                #[allow(trivial_casts)]
+                const NAME: &[::std::num::NonZeroU8] = unsafe {
+                    // stringify!($ident) cannot contain NUL symbol
+                    // so string does not contains zero bytes. (https://stackoverflow.com/a/6907327)
+                    // Also NonZeroU8 guarantees to have same layout as plain u8
+                    // so &[u8] can be safely casted into &[NonZeroU8].
+                    & *(
+                        stringify!($id).as_bytes()
+                        as *const [u8] as *const [::std::num::NonZeroU8]
+                    )
+                };
+                Segment(NAME.to_vec())
+            }
+        }
+    };
+    ($parent:ident $(
+        -> {$child:ident $($rest:tt)*}
+    )*) => {
+        $(
+            $crate::path!($parent -> $child);
+            $crate::path!($child $($rest)*);
+        )*
+    };
+    ($id:ident) => {};
+    ($parent:ident -> $child:ident) => {
+        impl $crate::path::ParentOf<$child> for $parent {}
+    };
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use static_assertions as sa;
+
+    path! {
+        struct Foo;
+        pub struct Bar;
+        pub(super) struct Baz;
+        pub(in crate::path::test) struct Quax;
+        struct Spam;
+        struct Eggs;
+    }
+    path! {
+        Root
+        -> {Foo
+            -> {Bar
+                -> {Baz}
+                -> {Quax}
+            }
+            -> {Spam -> Eggs}
+        }
+    }
+    sa::assert_impl_all!(Root: ParentOf<Foo>);
+    sa::assert_impl_all!(Foo: ParentOf<Bar>);
+    sa::assert_impl_all!(Bar: ParentOf<Baz>);
+    sa::assert_impl_all!(Bar: ParentOf<Quax>);
+    sa::assert_impl_all!(Foo: ParentOf<Spam>);
+    sa::assert_impl_all!(Spam: ParentOf<Eggs>);
+
+    sa::assert_impl_all!(HList![Root]: Chain);
+    sa::assert_impl_all!(HList![Root, Foo]: Chain);
+
+    // Foo -/> Baz
+    sa::assert_not_impl_all!(HList![Root, Foo, Baz]: Chain);
+    // Root -/> Bar
+    sa::assert_not_impl_all!(HList![Root, Bar]: Chain);
+    // Chain should start with Root
+    sa::assert_not_impl_all!(HList![Foo, Bar]: Chain);
+}
