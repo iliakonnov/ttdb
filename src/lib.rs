@@ -6,7 +6,8 @@
     never_type,
     const_generics,
     maybe_uninit_extra,
-    new_uninit
+    new_uninit,
+    vec_into_raw_parts
 )]
 #![warn(
     missing_docs,
@@ -28,7 +29,7 @@
     clippy::type_repetition_in_bounds,
     clippy::use_self
 )]
-pub mod hlist;
+#[macro_use] pub mod hlist;
 mod versions;
 mod reservoir;
 mod path;

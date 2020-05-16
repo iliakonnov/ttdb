@@ -2,8 +2,6 @@ use crate::hlist::*;
 use crate::versions::*;
 use crate::path::*;
 
-trait Path {}
-
 trait Database {
     type RoTxn: RoTransaction;
     type RwTxn: RoTransaction + RwTransaction;
