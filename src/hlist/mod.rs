@@ -21,22 +21,13 @@ impl !NonNil for Nil {}
 impl<T, L: NonNil> NonNil for Cons<T, L> {}
 
 impl HList for Nil {
-    type Item = Nothing;
+    type Item = !;
     type Rest = Nil;
 }
 impl<T, L: HList> HList for Cons<T, L> {
     type Item = T;
     type Rest = L;
 }
-
-pub type Nothing = !;
-pub trait IsItem<T> {}
-
-pub auto trait SomeItem {}
-impl !SomeItem for Nothing {}
-
-impl<T: SomeItem> IsItem<T> for T {}
-impl<T: SomeItem> IsItem<T> for Nothing {}
 
 pub trait Unpack {
     type Tuple;
@@ -293,12 +284,9 @@ mod test {
         <Cons<i32, Cons<i32, Nil>> as Homogenous>::Value,
         <Cons<i32, Cons<i32, Cons<i32, Nil>>> as Homogenous>::Value,
     );
-    sa::assert_impl_all!(<Cons<i32, Cons<i32, Cons<i32, Nil>>> as Homogenous>::Value: IsItem<i32>);
     sa::assert_type_eq_all!(HList![], Nil);
     sa::assert_type_eq_all!(HList![i32], Cons<i32, Nil>);
     sa::assert_type_eq_all!(HList![i32, u8], Cons<i32, Cons<u8, Nil>>);
-    sa::assert_impl_all!(<Cons<i32, Cons<i32, Nil>> as HList>::Item: IsItem<i32>);
-    sa::assert_impl_all!(<Nil as HList>::Item: IsItem<i32>);
 
     #[test]
     fn unpack() {

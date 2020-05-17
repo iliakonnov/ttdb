@@ -1,3 +1,7 @@
+use serde::{Deserialize, Serialize};
+use std::error::Error;
+use std::convert::TryInto;
+
 /// Базовый трейт. Этот трейт реализуют все элементы цепочки версий.
 /// Если тип хочет его реализовать, то он должен написать,какой тип будет первой версией.
 /// По сути он означает, что тип принадлежит определенной цепочки версий.
@@ -39,35 +43,35 @@ where
 }
 
 /// Пометка, что данная версия является первой в цепочке
-pub auto trait FirstVersion
+pub trait FirstVersion
 where
     // Она первая тогда, когда в цепочке указано, что цепочка начинается с этой версии
     Self: Version<FirstVersion=Self>,
 {
 }
 
+impl<T> FirstVersion for T where T: Version<FirstVersion=Self> {}
+
 // И сразу требуем, чтобы первые версии не могли иметь предыдущих версий
 impl<T> !PrevVersionRef for T where T: FirstVersion {}
 
 /// Пометка, что данная версия является последней в цепочке
-pub auto trait LastVersion where Self: PrevVersionRef {}
-//impl<T> !NextVersionRef for T where T: LastVersion {}
+pub trait LastVersion where Self: Version {}
+impl<T> !NextVersionRef for T where T: LastVersion {}
 // К сожалению, Rust на данный момент не позволяет автоматически реализовать LastVersion для всех подходящих типов
 
 /// Макрос для описания цепочек, который реализует все необходимые трейты (по три на каждую версию)
 #[macro_export]
 macro_rules! chain {
     (
-        $v1:ty $(=> $other:ty)*
+        $(#$v1_auto:tt)? $v1:ty $(=> $(#$auto:tt)? $other:ty)*
     ) => {
-        $crate::chain!([$v1] $v1 $(=> $other)*);
+        $crate::chain!(@iter [$v1] $(#$v1_auto)? $v1 $(=> $(#$auto)? $other)*);
     };
     (
-        [$first:ty] $v1:ty => $v2:ty $(=> $other:ty)*
+        @iter [$first:ty] $(#$v1_auto:tt)? $v1:ty => $(#$v2_auto:tt)? $v2:ty $(=> $(#$auto:tt)? $other:ty)*
     ) => {
-        impl $crate::versions::Version for $v1 {
-            type FirstVersion = $first;
-        }
+        $crate::chain!(@impl [$first] $(#$v1_auto)? $v1);
         impl $crate::versions::NextVersionRef for $v1 {
             type NextVersion = $v2;
         }
@@ -75,12 +79,19 @@ macro_rules! chain {
             type PrevVersion = $v1;
         }
 
-        $crate::chain!([$first] $v2 $(=> $other)*);
+        $crate::chain!(@iter [$first] $(#$v2_auto)? $v2 $(=> $(#$auto)? $other)*);
     };
-    ( [$first:ty] $last:ty ) => {
+    ( @iter [$first:ty] $(#$auto:tt)? $last:ty ) => {
+        $crate::chain!(@impl [$first] $(#$auto)? $last);
         impl $crate::versions::LastVersion for $last {
         }
-        impl $crate::versions::Version for $last {
+    };
+    (@impl [$first:ty] #auto $only:ty) => {
+        impl $crate::versions::AutoSerde for $only {}
+        $crate::chain!(@impl [$first] $only);
+    };
+    (@impl [$first:ty] $only:ty) => {
+        impl $crate::versions::Version for $only {
             type FirstVersion = $first;
         }
     };
@@ -135,6 +146,7 @@ impl<T> Counter for T where
 pub struct VersionNotFound;
 
 // Отдельный модуль, поскольку вспомогательные трейты должны там и остаться
+pub use loader::*;
 mod loader {
     use super::{Version, NextVersionRef, PrevVersionRef, LastVersionRef, Counter};
     use std::error::Error;
@@ -272,30 +284,72 @@ mod loader {
     }
 }
 
-pub use loader::*;
+pub trait AutoSerde: Version + for<'de> Deserialize<'de> + Serialize {}
 
-mod serde {
-    use serde::{Deserialize, Serialize};
-    use super::{Serde, Version};
-    use std::error::Error;
+impl<T: AutoSerde> Serde for T {
+    fn save(self) -> Result<Vec<u8>, Box<dyn Error>> {
+        let val = rmpv::ext::to_value(self)?;
+        let mut buf = Vec::new();
+        rmpv::encode::write_value(&mut buf, &val)?;
+        Ok(buf)
+    }
 
-    impl<T> Serde for T where
-        T: for<'de> Deserialize<'de> + Serialize,
-        T: Version
-    {
-        fn save(self) -> Result<Vec<u8>, Box<dyn Error>> {
-            let val = rmpv::ext::to_value(self)?;
-            let mut buf = Vec::new();
-            rmpv::encode::write_value(&mut buf, &val)?;
-            Ok(buf)
+    fn load(data: Vec<u8>) -> Result<Self, Box<dyn Error>> {
+        let mut cur = std::io::Cursor::new(data);
+        let val = rmpv::decode::read_value(&mut cur)?;
+        let res = rmpv::ext::from_value(val)?;
+        Ok(res)
+    }
+}
+
+macro_rules! impl_for_number {
+    ($num:ty) => {
+        chain!($num);
+        impl Serde for $num {
+            fn save(self) -> Result<Vec<u8>, Box<dyn Error>> {
+                Ok(self.to_le_bytes().to_vec())
+            }
+
+            fn load(data: Vec<u8>) -> Result<Self, Box<dyn Error>> {
+                type Expected<'a> = &'a [u8; std::mem::size_of::<$num>()];
+                <_ as TryInto<Expected>>::try_into(&data[..])
+                    .map(|buf| <$num>::from_le_bytes(*buf))
+                    .map_err(|e| e.into())
+            }
         }
+    };
+    ( $($num:ty);* $(;)? ) => {
+        $(impl_for_number!($num);)*
+    };
+}
 
-        fn load(data: Vec<u8>) -> Result<Self, Box<dyn Error>> {
-            let mut cur = std::io::Cursor::new(data);
-            let val = rmpv::decode::read_value(&mut cur)?;
-            let res = rmpv::ext::from_value(val)?;
-            Ok(res)
-        }
+chain!(!);
+impl_for_number!(
+    u8;  i8;
+    u16; i16;
+    u32; i32;
+    u64; i64;
+);
+
+chain!(String);
+impl Serde for String {
+    fn save(self) -> Result<Vec<u8>, Box<dyn Error>> {
+        Ok(self.into_bytes())
+    }
+
+    fn load(data: Vec<u8>) -> Result<Self, Box<dyn Error>> {
+        Self::from_utf8(data).map_err(|e| e.into())
+    }
+}
+
+chain!(Vec<u8>);
+impl Serde for Vec<u8> {
+    fn save(self) -> Result<Vec<u8>, Box<dyn Error>> {
+        Ok(self)
+    }
+
+    fn load(data: Vec<u8>) -> Result<Self, Box<dyn Error>> {
+        Ok(data)
     }
 }
 
@@ -303,9 +357,14 @@ mod serde {
 mod test {
     #![allow(clippy::blacklisted_name)]
     extern crate static_assertions as sa;
+    use serde::{Serialize, Deserialize};
     use super::*;
 
-    // Подготовим типы
+    #[derive(Debug, Eq, PartialEq, Serialize, Deserialize)] struct Only;
+    chain!(#auto Only);
+    sa::const_assert_eq!(Only::VERSION, 0);
+    sa::assert_type_eq_all!(Only, <Only as Version>::FirstVersion);
+
     #[derive(Debug, Eq, PartialEq)] struct Foo;
     #[derive(Debug, Eq, PartialEq)] struct Bar;
     #[derive(Debug, Eq, PartialEq)] struct Baz;

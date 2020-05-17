@@ -4,6 +4,7 @@ use indexmap::IndexSet;
 use std::hash::Hash;
 use serde::{Serialize, Deserialize, Serializer, Deserializer};
 use std::borrow::Cow;
+use derivative::Derivative;
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub enum Size {
@@ -11,7 +12,8 @@ pub enum Size {
     Maximum(usize)
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Derivative, Clone, Serialize, Deserialize)]
+#[derivative(Debug(bound="T: Hash+Eq+std::fmt::Debug"))]
 #[serde(bound(
     serialize="T: Hash + Eq + Clone + Serialize",
     deserialize="T: Hash + Eq + Clone + for<'a> Deserialize<'a>"
@@ -22,6 +24,7 @@ pub enum Reservoir<T> {
 }
 
 impl<T: Hash + Eq> Reservoir<T> {
+    #[must_use]
     pub fn new(size: Size, buf: IndexSet<T>) -> Self {
         match size {
             Size::All => {
@@ -48,6 +51,7 @@ impl<T: Hash + Eq> Reservoir<T> {
         }
     }
 
+    #[must_use]
     pub fn inner(&self) -> &IndexSet<T> {
         match self {
             Self::Limited(lim) => lim.inner(),
@@ -56,7 +60,8 @@ impl<T: Hash + Eq> Reservoir<T> {
     }
 }
 
-#[derive(Clone)]
+#[derive(Derivative, Clone)]
+#[derivative(Debug(bound="T: Hash+Eq+std::fmt::Debug"))]
 pub struct Limited<T> {
     rng: SmallRng,
     buf: IndexSet<T>,
@@ -87,21 +92,25 @@ pub enum InsertionResult<T> {
 }
 
 impl<T> Limited<T> {
+    #[must_use]
     pub const fn inner(&self) -> &IndexSet<T> {
         &self.buf
     }
 
+    #[must_use]
     pub fn max_size(&self) -> usize {
         self.buf.len() + self.fullness
     }
 }
 
 impl<T: Hash + Eq> Limited<T> {
+    #[must_use]
     pub fn new(max: usize, buf: IndexSet<T>) -> Self {
         let total_count = buf.len();
         Self::with_count(max, buf, total_count)
     }
 
+    #[must_use]
     pub fn with_count(max: usize, mut buf: IndexSet<T>, total_count: usize) -> Self {
         let mut rng = SmallRng::from_rng(rand::thread_rng()).unwrap();
 
