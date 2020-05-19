@@ -30,6 +30,8 @@
     clippy::use_self,
     clippy::missing_errors_doc
 )]
+#[macro_use] mod fntools;
+
 #[macro_use] pub mod hlist;
 #[macro_use] pub mod versions;
 pub mod reservoir;

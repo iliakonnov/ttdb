@@ -1,6 +1,5 @@
 use std::mem::MaybeUninit;
 use fntools::tuple::append::TupleAppend;
-use fntools::for_tuples;
 
 pub trait HList: Sized {
     type Item;
@@ -63,7 +62,7 @@ macro_rules! unpack_impl {
     };
 }
 
-fntools::for_tuples!(A, B, C, D, E, F, G, H, I, J, K, L, # unpack_impl);
+for_tuples!(A, B, C, D, E, F, G, H, I, J, K, L, # unpack_impl);
 
 pub trait SplitRes: HList {
     type Good: HList;

@@ -472,11 +472,11 @@ mod test {
         // No downgrade is possible: Foo <\- Bar
         let (version, data) = (Bar::VERSION, bar.save().unwrap());
         let foo = load::<Foo>(version, data);
-        assert!(matches!(foo,
+        assert!(matches!(dbg!(foo),
             Err(LoadError::NoMigration {
                 from_version: 1,  // From Bar
                 to_version: 0, // to Foo
-                to_name: "fstreedb::versions::test::Foo"
+                to_name: "ttdb::versions::test::Foo"
             })
         ));
     }
