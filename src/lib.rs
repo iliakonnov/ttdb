@@ -7,7 +7,8 @@
     maybe_uninit_extra,
     new_uninit,
     vec_into_raw_parts,
-    const_raw_ptr_deref
+    const_raw_ptr_deref,
+    generic_associated_types,
 )]
 #![warn(
     missing_docs,
@@ -36,4 +37,5 @@
 #[macro_use] pub mod versions;
 pub mod reservoir;
 #[macro_use] pub mod path;
+
 pub mod api;

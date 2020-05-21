@@ -91,87 +91,6 @@ impl<T, E, L: SplitRes> SplitRes for Cons<Result<T, E>, L> {
     }
 }
 
-#[macro_export]
-macro_rules! map_hlist {
-    {
-        $vis:vis trait $tr:ident |$arg:ident : $typ:ident| -> ($($ret:tt)*) where ($($bound:tt)*) {$($body:tt)*}
-    } => {
-        $vis trait $tr where
-            Self::Out: $crate::hlist::Homogenous<Value=$($ret)*>,
-        {
-            type Out;
-            fn do_map_hlist(self) -> Self::Out;
-        }
-        impl<$typ, L: $tr> $tr for $crate::hlist::Cons<$typ, L> where $($bound)* {
-            type Out = $crate::hlist::Cons<$($ret)*, <L as $tr>::Out>;
-            fn do_map_hlist(self) -> Self::Out {
-                #[allow(unused_mut)] let mut $arg: $typ = self.0;
-                let res: $($ret)* = {
-                    $($body)*
-                };
-                let rest = <L as $tr>::do_map_hlist(self.1);
-                $crate::hlist::Cons(res, rest)
-            }
-        }
-        impl<$typ> $tr for $crate::hlist::Cons<$typ, Nil> where $($bound)* {
-            type Out = $crate::hlist::Cons<$($ret)*, Nil>;
-            fn do_map_hlist(self) -> Self::Out {
-                #[allow(unused_mut)] let mut $arg: $typ = self.0;
-                let res: $($ret)* = {
-                    $($body)*
-                };
-                $crate::hlist::Cons(res, Nil)
-            }
-        }
-    };
-
-    ($list:expr => $($t:tt)*) => {
-        {
-            $crate::map_hlist! {
-                trait HListMapHelper $($t)*
-            }
-            $list.do_map_hlist()
-        }
-    };
-}
-
-#[macro_export]
-macro_rules! foldl_hlist {
-    {
-        $vis:vis trait $tr:ident |$start:ident, $arg:ident : $typ:ident| -> ($($ret:tt)*) where ($($bound:tt)*) {$($body:tt)*}
-    } => {
-        $vis trait $tr {
-            fn do_foldl_hlist(self, $start: $($ret)*) -> $($ret)*;
-        }
-        impl<$typ, L: $tr> $tr for $crate::hlist::Cons<$typ, L> where $($bound)* {
-            fn do_foldl_hlist(self, #[allow(unused_mut)] mut $start: $($ret)*) -> $($ret)* {
-                #[allow(unused_mut)] let mut $arg = self.0;
-                let new: $($ret)* = {
-                    $($body)*
-                };
-                <L as $tr>::do_foldl_hlist(self.1, new)
-            }
-        }
-        impl<$typ> $tr for $crate::hlist::Cons<$typ, $crate::hlist::Nil> where $($bound)* {
-            fn do_foldl_hlist(self, #[allow(unused_mut)] mut $start: $($ret)*) -> $($ret)* {
-                #[allow(unused_mut)] let mut $arg = self.0;
-                {
-                    $($body)*
-                }
-            }
-        }
-    };
-
-    ($list:expr => $start:expr => $($t:tt)*) => {
-        {
-            $crate::foldl_hlist! {
-                trait HListFoldlHelper $($t)*
-            }
-            $list.do_foldl_hlist($start)
-        }
-    };
-}
-
 // I like the idea, but this code does not compiling:
 //     error[E0275]: overflow evaluating the requirement `hlist::Nil: hlist::CreateHList<V, {N-1}>`
 // Increasing #![recursion_limit] does not help, so I just left it commented.
@@ -272,6 +191,7 @@ impl<T, L> ToSlice for Cons<T, L> where
 #[cfg(test)]
 mod test {
     extern crate static_assertions as sa;
+    use std::mem::drop;
     use super::*;
 
     sa::assert_not_impl_all!(Nil: Homogenous);
@@ -347,22 +267,18 @@ mod test {
     }
 
     #[test]
-    fn map() {
-        let list = Cons(1, Cons('a', Cons("abc", Nil)));
-        let mapped = map_hlist!(list => |i: Foo| -> (String) where (Foo: std::fmt::Display) {
-            format!("{}", i)
-        });
-        let mapped: HList![String, String, String] = mapped;
-        let slice = mapped.into_slice();
-        assert_eq!(&slice[..], &["1", "a", "abc"]);
+    fn clone() {
+        let list = Cons(1, Cons('a', Cons("abc".to_string(), Nil)));
+        let cloned = list.clone();
+        assert_eq!(cloned.unpack(), (1, 'a', "abc".to_string()));
+        drop(list);
     }
 
     #[test]
-    fn sum() {
-        let list = Cons(1_u8, Cons(-2_i16, Cons(3_u32, Nil)));
-        let folded: i64 = foldl_hlist!(list => 0 => |a, b: T| -> (i64) where (T: Into<i64>) {
-            a + b.into()
-        });
-        assert_eq!(folded, 1-2+3);
+    fn copy() {
+        let list = Cons(1, Cons('a', Nil));
+        let copied = list;
+        assert_eq!(copied.unpack(), (1, 'a'));
+        #[allow(clippy::drop_copy)] drop(list);
     }
 }

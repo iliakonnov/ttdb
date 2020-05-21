@@ -67,26 +67,29 @@ mod collect {
     use super::*;
     use crate::hlist::*;
 
-    // CollectHelper implemented only for HLists of Paths
-    foldl_hlist! {
-        pub trait CollectHelper |start, p: T| -> (PathBuf) where (T: Path) {
-            start.0.push(p.into_segment());
-            start
-        }
-    }
-
     // Does not guarantees that starts with Root
-    pub trait WeakChain: CollectHelper {
+    pub trait WeakChain {
+        fn collect(self, res: PathBuf) -> PathBuf;
     }
 
     impl<P> WeakChain for Cons<P, Nil> where P: Path
-    {}
+    {
+        fn collect(self, mut res: PathBuf) -> PathBuf {
+            res.0.push(self.0.into_segment());
+            res
+        }
+    }
 
     impl<P, C, R> WeakChain for Cons<P, Cons<C, R>> where
         P: ParentOf<C>,
         C: Path,
         Cons<C, R>: WeakChain  // This bound is why WeakChain trait is required
-    {}
+    {
+        fn collect(self, mut res: PathBuf) -> PathBuf {
+            res.0.push(self.0.into_segment());
+            self.1.collect(res)
+        }
+    }
 
     #[allow(clippy::doc_markdown)]
     /// HList of Paths which starts with Root and each is ParenOf next path.
@@ -97,7 +100,7 @@ mod collect {
     }
 
     pub fn collect<C: Chain>(chain: C) -> PathBuf {
-        chain.do_foldl_hlist(PathBuf(Vec::new()))
+        chain.collect(PathBuf(Vec::new()))
     }
 }
 
