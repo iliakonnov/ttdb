@@ -50,6 +50,13 @@ macro_rules! HList {
     [$t:ty $(, $ts:ty)* $(,)?] => {$crate::hlist::Cons<$t, $crate::HList![$($ts),*]>};
 }
 
+#[macro_export]
+#[allow(non_snake_case)]
+macro_rules! hlist {
+    [] => {$crate::hlist::Nil};
+    [$x:expr $(, $xs:expr)* $(,)?] => {$crate::hlist::Cons($x, $crate::hlist![$($xs),*])};
+}
+
 macro_rules! unpack_impl {
     ($($t:ident,)*) => {
         impl<$($t),*> Unpack for HList![$($t),*] {
@@ -194,7 +201,7 @@ mod test {
     use std::mem::drop;
     use super::*;
 
-    sa::assert_not_impl_all!(Nil: Homogenous);
+    sa::assert_not_impl_any!(Nil: Homogenous);
     sa::assert_impl_all!(Cons<i32, Nil>: Homogenous);
     sa::assert_impl_all!(Cons<i32, Cons<i32, Nil>>: Homogenous);
     sa::assert_type_eq_all!(
@@ -210,6 +217,13 @@ mod test {
     #[test]
     fn unpack() {
         let list = Cons(1, Cons('a', Cons("abc", Nil)));
+        let tup = list.unpack();
+        assert_eq!(tup, (1, 'a', "abc"));
+    }
+
+    #[test]
+    fn hlist_macro() {
+        let list: HList![u32, char, &'static str] = hlist![1, 'a', "abc"];
         let tup = list.unpack();
         assert_eq!(tup, (1, 'a', "abc"));
     }

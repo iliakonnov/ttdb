@@ -4,7 +4,7 @@ use crate::reservoir::Reservoir;
 use serde::{Serialize, Deserialize};
 
 #[derive(Debug, Clone, Hash, Ord, PartialOrd, PartialEq, Eq, Deserialize, Serialize)]
-pub struct Segment(Vec<NonZeroU8>);
+pub struct Segment(pub Vec<NonZeroU8>);
 
 // TODO: Somehow put this `#[allow]` onto `#[derive(Deserialize)]`
 #[allow(clippy::unsafe_derive_deserialize)] // Vec<NonZeroU8> into Vec<u8> is safe
@@ -19,7 +19,7 @@ pub use allow_lint_helper::PathBuf;
 pub type ChildrenInfo = Reservoir<Segment>;
 
 impl PathBuf {
-    fn into_bytes(self) -> Vec<u8> {
+    pub fn into_bytes(self) -> Vec<u8> {
         let cap: usize = self.0.iter().map(|seg| seg.0.len()).sum();
         // Because we are adding zero bytes after each segment
         let cap = cap + self.0.len();
@@ -69,12 +69,14 @@ mod collect {
 
     // Does not guarantees that starts with Root
     pub trait WeakChain {
+        type Last: Path;
         fn collect(self, res: PathBuf) -> PathBuf;
     }
 
     impl<P> WeakChain for Cons<P, Nil> where P: Path
     {
-        fn collect(self, mut res: PathBuf) -> PathBuf {
+        type Last = P;
+        default fn collect(self, mut res: PathBuf) -> PathBuf {
             res.0.push(self.0.into_segment());
             res
         }
@@ -85,6 +87,7 @@ mod collect {
         C: Path,
         Cons<C, R>: WeakChain  // This bound is why WeakChain trait is required
     {
+        type Last = <Cons<C, R> as WeakChain>::Last;
         fn collect(self, mut res: PathBuf) -> PathBuf {
             res.0.push(self.0.into_segment());
             self.1.collect(res)
@@ -94,17 +97,18 @@ mod collect {
     #[allow(clippy::doc_markdown)]
     /// HList of Paths which starts with Root and each is ParenOf next path.
     pub trait Chain: WeakChain {
+        type Last: Path;
+        fn collect(self) -> PathBuf where Self: Sized {
+            WeakChain::collect(self, PathBuf(Vec::new()))
+        }
     }
 
     impl<T> Chain for Cons<Root, T> where Cons<Root, T>: WeakChain {
-    }
-
-    pub fn collect<C: Chain>(chain: C) -> PathBuf {
-        chain.collect(PathBuf(Vec::new()))
+        type Last = <Self as WeakChain>::Last;
     }
 }
 
-pub use collect::{Chain, collect as collect_chain};
+pub use collect::Chain;
 use crate::versions::FirstVersion;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -183,17 +187,17 @@ macro_rules! path {
         impl $crate::path::Path for $id {
             type AssociatedData = $data;
 
-            fn into_segment(self) -> Segment {
-                Segment(Self::TAG.to_vec())
+            fn into_segment(self) -> $crate::path::Segment {
+                $crate::path::Segment(Self::TAG.to_vec())
             }
 
-            type Error = UnexpectedTag;
+            type Error = $crate::path::UnexpectedTag;
 
-            fn from_segment(seg: Segment) -> Result<Self, Self::Error> {
+            fn from_segment(seg: $crate::path::Segment) -> Result<Self, Self::Error> {
                 if seg.0 == Self::TAG {
                     Ok(Self)
                 } else {
-                    Err(UnexpectedTag)
+                    Err($crate::path::UnexpectedTag)
                 }
             }
         }
@@ -249,11 +253,11 @@ mod test {
     sa::assert_impl_all!(HList![Root, Foo]: Chain);
 
     // Foo -/> Baz
-    sa::assert_not_impl_all!(HList![Root, Foo, Baz]: Chain);
+    sa::assert_not_impl_any!(HList![Root, Foo, Baz]: Chain);
     // Root -/> Bar
-    sa::assert_not_impl_all!(HList![Root, Bar]: Chain);
+    sa::assert_not_impl_any!(HList![Root, Bar]: Chain);
     // Chain should start with Root
-    sa::assert_not_impl_all!(HList![Foo, Bar]: Chain);
+    sa::assert_not_impl_any!(HList![Foo, Bar]: Chain);
 
     #[test]
     fn tag() {
@@ -262,5 +266,34 @@ mod test {
             .map(|x| NonZeroU8::new(*x).unwrap())
             .collect::<Box<[_]>>();
         assert_eq!(Foo::TAG, &expected[..]);
+    }
+
+    #[test]
+    fn chain_bytes() {
+        let chain = hlist![Root, Foo, Bar, Baz];
+        let collected = chain.collect();
+        assert_eq!(collected.into_bytes(), b"\0Foo\0Bar\0Baz\0")
+    }
+
+    #[test]
+    fn collect_chain() {
+        let chain = hlist![Root, Foo, Bar, Baz];
+        let collected = chain.collect();
+        let expected: Vec<&'static [u8]> = vec![
+            b"",
+            b"Foo",
+            b"Bar",
+            b"Baz"
+        ];
+        let converted = PathBuf(expected
+            .into_iter()
+            .map(|x| x.into_iter()
+                .map(|y| NonZeroU8::new(*y).unwrap())
+                .collect()
+            )
+            .map(Segment)
+            .collect()
+        );
+        assert_eq!(collected, converted);
     }
 }
