@@ -1,8 +1,9 @@
 use std::marker::PhantomData;
-use crate::hlist::{HList, Nil, Cons};
+use crate::hlist::{HList, Append, Nil, Cons};
 use crate::versions::Version;
 use crate::path::{Path, ChildrenInfo, Chain};
 use crate::versions;
+use derivative::Derivative;
 
 pub trait Database: Sized {
     type RoTxn: CanRead;
@@ -13,7 +14,7 @@ pub trait Database: Sized {
 
 impl<T: Database> DatabaseExt for T {}
 pub trait DatabaseExt: Database {
-    fn access<P: Chain>(&self, path: P) -> Access<Self, P, Nil, !> {
+    fn access<P: Chain>(&self, path: P) -> Access<Self, P, NoTxn, Nil> {
         Access {
             db: self,
             path,
@@ -34,11 +35,11 @@ pub trait CanWrite: CanRead {
 }
 
 #[derive(Debug)]
-pub struct Access<'db, Db: Database, P: Chain, R: HList, Txn> {
+pub struct Access<'db, Db, P, Txn, R> {
     db: &'db Db,
     path: P,
+    txn: PhantomData<Txn>,
     result: R,
-    txn: PhantomData<Txn>
 }
 
 pub trait Lazy<Txn> {
@@ -71,27 +72,6 @@ impl<Txn, T, L> Executable<Txn> for Cons<T, L> where
     }
 }
 
-struct LazyGet<V>(PhantomData<V>);
-impl<'db, V: versions::Serde, Txn: CanRead> Lazy<Txn> for LazyGet<V> {
-    type Result = V;
-
-    fn execute(self, txn: Txn, path: &[u8]) -> Self::Result {
-        let data = txn.get(path);
-        todo!()
-    }
-}
-
-struct LazySet<V>(V);
-impl<'db, V: versions::Serde, Txn: CanWrite> Lazy<Txn> for LazySet<V> {
-    type Result = ();
-
-    fn execute(self, txn: Txn, path: &[u8]) -> Self::Result {
-        let ser = self.0.save();
-        let data = todo!();
-        txn.set(path, data);
-    }
-}
-
 // Ensure that AccessImpl::*Txn corresponds to Db generic parameter
 pub trait Corresponds<'db, Db: Database> {
     fn create(db: &'db Db) -> Self;
@@ -112,44 +92,112 @@ impl<'db, Db: Database> Corresponds<'db, Db> for NoTxn {
     }
 }
 
-trait AccessImpl<'db, Db: Database, P: Chain, Txn: Corresponds<'db, Db>, R: Executable<Txn>> {
+pub trait AccessImpl<'db, Db: Database, P: Chain, Txn: Corresponds<'db, Db>, R: Executable<Txn>> {
     type NoTxn: Corresponds<'db, Db>;
     type RoTxn: Corresponds<'db, Db> + CanRead;
     type RwTxn: Corresponds<'db, Db> + CanRead + CanWrite;
-    fn get<V>(self) -> Access<'db, Db, P, Cons<LazyGet<V>, R>, Self::RoTxn>
-        where V: Version<FirstVersion=<<P as Chain>::Last as Path>::AssociatedData>;
-    fn set<V>(self, val: V) -> Access<'db, Db, P, Cons<LazySet<V>, R>, Self::RwTxn>
-        where V: Version<FirstVersion=<<P as Chain>::Last as Path>::AssociatedData>;
-    fn execute(self) -> R::Result;
 }
 
-default impl<'db, Db, P, R, Txn> AccessImpl<'db, Db, P, Txn, R> for Access<'db, Db, P, R, Txn> where
+// Creates new struct, that implements Lazy<Txn>
+macro_rules! lazy {
+    ($vis:vis $name:ident <$($generics:ident),*> where ($($bound:tt)*)
+        { $($ignored:ident: $ign_ty:ty),* }
+     Path=$path:ident
+     $txn:ident=$txn_ty:ident : $txn_bound:path
+     |$($arg:ident : $ty:ty),*| -> $res:ty {
+        $($body:tt)*
+     }
+    ) => {
+        #[derive(Debug)]
+        $vis struct $name<$($generics),*> {
+            $( $arg : $ty ,)*
+            $( $ignored : $ign_ty ,)*
+        }
+        impl<$txn_ty: $txn_bound, $($generics),*> Lazy<$txn_ty> for $name<$($generics),*>
+            where $($bound)*
+        {
+            type Result = $res;
+            fn execute(self, $txn: $txn_ty, $path: &[u8]) -> Self::Result {
+                let Self { $($arg,)* .. } = self;
+                $($body)*
+            }
+        }
+    };
+}
+
+// These types are so complex that I made special macro for them...
+macro_rules! returns {
+    ($txn:ident => $res:ty) => {
+        Access<
+            // Some things not changed
+            'db, Db, P,
+            // Set new Txn
+            <Self as AccessImpl<'db, Db, P, Txn, R>>::$txn,
+            // Append $res to return type
+            <R as Append<$res>>::Result
+        >
+    };
+    ($this:expr => $lazy:expr) => {
+        match $this {
+            this => Access {
+                // Not changed
+                db: this.db,
+                path: this.path,
+                // Set new txn,
+                txn: PhantomData::default(),
+                // Append $lazy to result
+                result: this.result.append($lazy),
+            }
+        }
+    };
+}
+
+lazy!(
+    pub LazyGet<V> where (V: Version + versions::Serde) { phantom: PhantomData<V> }
+    Path=path
+    txn=Txn: CanRead
+    | | -> V {
+        let _ = (path, txn);
+        todo!()
+    }
+);
+
+lazy!(
+    pub LazySet<V> where (V: Version + versions::Serde) {}
+    Path=path
+    txn=Txn: CanWrite
+    | val: V | -> () {
+        let _ = (val, path, txn);
+        todo!()
+    }
+);
+
+impl<'db, Db, P, Txn, R> Access<'db, Db, P, Txn, R> where
     Db: Database,
     P: Chain,
+    Txn: Corresponds<'db, Db>,
     R: Executable<Txn>,
-    Txn: Corresponds<'db, Db>
+    Self: AccessImpl<'db, Db, P, Txn, R>
 {
-    fn get<V>(self) -> Access<'db, Db, P, Cons<LazyGet<V>, R>, Self::RoTxn>
-        where V: Version<FirstVersion=<<P as Chain>::Last as Path>::AssociatedData>
+    pub fn get<V>(self) -> returns!(RoTxn => LazyGet<V>) where
+        R: Append<LazyGet<V>>,
+        V: Version<FirstVersion=<<P as Chain>::Last as Path>::AssociatedData> + versions::Serde
     {
-        Access {
-            db: self.db,
-            path: self.path,
-            result: Cons(LazyGet(PhantomData::default()), self.result),
-            txn: PhantomData::default()
-        }
+        returns!(self => LazyGet {
+            phantom: PhantomData::default()
+        })
     }
-    fn set<V>(self, val: V) -> Access<'db, Db, P, Cons<LazySet<V>, R>, Self::RwTxn>
-        where V: Version<FirstVersion=<<P as Chain>::Last as Path>::AssociatedData>
+
+    pub fn set<V>(self, val: V) -> returns!(RwTxn => LazySet<V>) where
+        R: Append<LazySet<V>>,
+        V: Version<FirstVersion=<<P as Chain>::Last as Path>::AssociatedData> + versions::Serde
     {
-        Access {
-            db: self.db,
-            path: self.path,
-            result: Cons(LazySet(val), self.result),
-            txn: PhantomData::default()
-        }
+        returns!(self => LazySet {
+            val
+        })
     }
-    fn execute(self) -> R::Result {
+
+    pub fn execute(self) -> R::Result {
         let txn = Txn::create(self.db);
         let path = Chain::collect(self.path).into_bytes();
         self.result.execute(txn, &path)
@@ -163,7 +211,8 @@ pub struct NoTxn;
 // but D::RwTxn, D::RoTxn, NoTxn may equal to each other.
 // So it is impossible to implement AccessExt for Access<..., Db::R?Txn> directly
 // because of conflicting implementations.
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Derivative)]
+#[derivative(Copy, Clone)]
 pub struct Ro<'db, D: Database>(&'db D::RoTxn);
 impl<'db, D: Database> CanRead for Ro<'db, D> {
     fn get(&self, path: &[u8]) -> Vec<u8> {
@@ -175,7 +224,8 @@ impl<'db, D: Database> CanRead for Ro<'db, D> {
     }
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Derivative)]
+#[derivative(Copy, Clone)]
 pub struct Rw<'db, D: Database>(&'db D::RwTxn);
 impl<'db, D: Database> CanRead for Rw<'db, D> {
     fn get(&self, path: &[u8]) -> Vec<u8> {
@@ -201,33 +251,33 @@ impl<'db, D: Database> CanWrite for Rw<'db, D> {
 }
 
 // We can upgrade from NoTxn to Ro<Db> and from Ro<Db> to Rw<Db>, but we never will downgrade
-impl<'db, Db, P, R> AccessImpl<'db, Db, P, NoTxn, R> for Access<'db, Db, P, R, NoTxn> where
+impl<'db, Db, P, R> AccessImpl<'db, Db, P, NoTxn, R> for Access<'db, Db, P, NoTxn, R> where
     Db: Database,
     P: Chain,
-    R: Executable<NoTxn>,
     NoTxn: Corresponds<'db, Db>,
+    R: Executable<NoTxn>,
 {
     type NoTxn = NoTxn;
     type RoTxn = Ro<'db, Db>;
     type RwTxn = Rw<'db, Db>;
 }
 
-impl<'db, Db, P, R> AccessImpl<'db, Db, P, Ro<'db, Db>, R> for Access<'db, Db, P, R, Ro<'db, Db>> where
+impl<'db, Db, P, R> AccessImpl<'db, Db, P, Ro<'db, Db>, R> for Access<'db, Db, P, Ro<'db, Db>, R> where
     Db: Database,
     P: Chain,
-    R: Executable<Ro<'db, Db>>,
     Ro<'db, Db>: Corresponds<'db, Db>,
+    R: Executable<Ro<'db, Db>>,
 {
     type NoTxn = Ro<'db, Db>;
     type RoTxn = Ro<'db, Db>;
     type RwTxn = Rw<'db, Db>;
 }
 
-impl<'db, Db, P, R> AccessImpl<'db, Db, P, Rw<'db, Db>, R> for Access<'db, Db, P, R, Rw<'db, Db>> where
+impl<'db, Db, P, R> AccessImpl<'db, Db, P, Rw<'db, Db>, R> for Access<'db, Db, P, Rw<'db, Db>, R> where
     Db: Database,
     P: Chain,
-    R: Executable<Rw<'db, Db>>,
     Rw<'db, Db>: Corresponds<'db, Db>,
+    R: Executable<Rw<'db, Db>>,
 {
     type NoTxn = Rw<'db, Db>;
     type RoTxn = Rw<'db, Db>;
@@ -265,26 +315,21 @@ mod tests {
         };
     }
 
-    assert_impl!(
-        for<'db>
-        where()
-        Access<'db, MockDb, HList![Root, Foo], Nil, NoTxn>
-            : AccessImpl<'db, MockDb, HList![Root, Foo], NoTxn, Nil>
-    );
+    assert_impl!(for<'db> where()
+        Access<'db, MockDb, HList![Root, Foo], NoTxn, Nil>
+            : AccessImpl<'db, MockDb, HList![Root, Foo], NoTxn, Nil>);
+    assert_impl!(for<'db> where()
+        HList![LazyGet<i32>, LazySet<i32>]: Executable<Rw<'db, MockDb>>);
 
-    // Check that all "good" Access's are implement corresponding AccessImpl.
-    // It is not very obvious, because of default impl
-    assert_impl!(for<'db, D, P, L, T>
-     /*NoTxn*/   where(D: Database+'db, P: Chain, L: Executable<NoTxn>)
-                 Access<'db, D, P, L, NoTxn>: AccessImpl<'db, D, P, NoTxn, L>);
-    assert_impl!(for<'db, D, P, L, T>
-     /* Ro */    where(D: Database+'db, P: Chain, L: Executable<Ro<'db, D>>)
-                 Access<'db, D, P, L, Ro<'db, D>>: AccessImpl<'db, D, P, Ro<'db, D>, L>);
-    assert_impl!(for<'db, D, P, L, T>
-     /* Rw */    where(D: Database+'db, P: Chain, L: Executable<Rw<'db, D>>)
-                 Access<'db, D, P, L, Rw<'db, D>>: AccessImpl<'db, D, P, Rw<'db, D>, L>);
+    // We are interested only in type checking this code, so there is no #[test] attribute
+    fn get_and_set_ty() {
+        let _: HList![i32, ()] = MockDb(MockTxn).access(hlist![Root, Foo])
+            .get::<i32>()
+            .set(0_i32)
+            .execute();
+    }
 
-    path!(struct Foo;);
+    path!(struct Foo[i32];);
     path!(Root -> Foo);
 
     struct MockDb(MockTxn);

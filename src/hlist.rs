@@ -195,6 +195,25 @@ impl<T, L> ToSlice for Cons<T, L> where
     }
 }
 
+pub trait Append<T>: HList {
+    type Result: HList;
+    fn append(self, elem: T) -> Self::Result;
+}
+
+impl<T> Append<T> for Nil {
+    type Result = Cons<T, Nil>;
+    fn append(self, elem: T) -> Self::Result {
+        Cons(elem, Nil)
+    }
+}
+
+impl<T, U, L: Append<T>> Append<T> for Cons<U, L> {
+    type Result = Cons<U, <L as Append<T>>::Result>;
+    fn append(self, elem: T) -> Self::Result {
+        Cons(self.0, self.1.append(elem))
+    }
+}
+
 #[cfg(test)]
 mod test {
     extern crate static_assertions as sa;
@@ -213,6 +232,8 @@ mod test {
     sa::assert_type_eq_all!(HList![], Nil);
     sa::assert_type_eq_all!(HList![i32], Cons<i32, Nil>);
     sa::assert_type_eq_all!(HList![i32, u8], Cons<i32, Cons<u8, Nil>>);
+
+    sa::assert_type_eq_all!(<HList![i32, u8] as Append<char>>::Result, HList![i32, u8, char]);
 
     #[test]
     fn unpack() {

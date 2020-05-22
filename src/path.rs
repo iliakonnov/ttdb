@@ -19,6 +19,7 @@ pub use allow_lint_helper::PathBuf;
 pub type ChildrenInfo = Reservoir<Segment>;
 
 impl PathBuf {
+    #[must_use]
     pub fn into_bytes(self) -> Vec<u8> {
         let cap: usize = self.0.iter().map(|seg| seg.0.len()).sum();
         // Because we are adding zero bytes after each segment
