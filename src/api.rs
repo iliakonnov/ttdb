@@ -3,17 +3,16 @@ use crate::hlist::{HList, Append, Nil, Cons};
 use crate::versions::Version;
 use crate::path::{Path, ChildrenInfo, Chain};
 use crate::versions;
-use derivative::Derivative;
 
-pub trait Database: Sized {
-    type RoTxn: CanRead;
-    type RwTxn: CanWrite;
-    fn ro(&self) -> &Self::RoTxn;
-    fn rw(&self) -> &Self::RwTxn;
+pub trait Database<'db>: Sized {
+    type RoTxn: CanRead + 'db;
+    type RwTxn: CanWrite + 'db;
+    fn ro(&'db self) -> Self::RoTxn;
+    fn rw(&'db self) -> Self::RwTxn;
 }
 
-impl<T: Database> DatabaseExt for T {}
-pub trait DatabaseExt: Database {
+impl<'db, T: Database<'db>> DatabaseExt<'db> for T {}
+pub trait DatabaseExt<'db>: Database<'db> {
     fn access<P: Chain>(&self, path: P) -> Access<Self, P, NoTxn, Nil> {
         Access {
             db: self,
@@ -29,9 +28,9 @@ pub trait CanRead {
     fn get_children(&self, path: &[u8]) -> ChildrenInfo;
 }
 pub trait CanWrite: CanRead {
-    fn set(&self, path: &[u8], data: Vec<u8>);
-    fn set_children(&self, parent: &[u8], children: ChildrenInfo);
-    fn remove(&self, path: &[u8]);
+    fn set(&mut self, path: &[u8], data: &[u8]);
+    fn set_children(&mut self, parent: &[u8], children: &ChildrenInfo);
+    fn remove(&mut self, path: &[u8]);
 }
 
 #[derive(Debug)]
@@ -44,55 +43,53 @@ pub struct Access<'db, Db, P, Txn, R> {
 
 pub trait Lazy<Txn> {
     type Result;
-    fn execute(self, txn: Txn, path: &[u8]) -> Self::Result;
+    fn execute(self, txn: &Txn, path: &[u8]) -> Self::Result;
 }
 
 pub trait Executable<Txn>: HList {
     type Result: HList;
-    fn execute(self, txn: Txn, path: &[u8]) -> Self::Result;
+    fn execute(self, txn: &Txn, path: &[u8]) -> Self::Result;
 }
 
 impl<Txn> Executable<Txn> for Nil {
     type Result = Nil;
 
-    fn execute(self, _txn: Txn, _path: &[u8]) -> Self::Result {
+    fn execute(self, _txn: &Txn, _path: &[u8]) -> Self::Result {
         Nil
     }
 }
 impl<Txn, T, L> Executable<Txn> for Cons<T, L> where
-    // Require copy, so we can not to take reference to R?<Db> which is wrapper around reference too
-    Txn: Copy,
     T: Lazy<Txn>,
     L: Executable<Txn>
 {
     type Result = Cons<T::Result, L::Result>;
 
-    fn execute(self, txn: Txn, path: &[u8]) -> Self::Result {
+    fn execute(self, txn: &Txn, path: &[u8]) -> Self::Result {
         Cons(self.0.execute(txn, path), self.1.execute(txn, path))
     }
 }
 
 // Ensure that AccessImpl::*Txn corresponds to Db generic parameter
-pub trait Corresponds<'db, Db: Database> {
+pub trait Corresponds<'db, Db: Database<'db>> {
     fn create(db: &'db Db) -> Self;
 }
-impl<'db, Db: Database> Corresponds<'db, Db> for Ro<'db, Db> {
+impl<'db, Db: Database<'db>> Corresponds<'db, Db> for Ro<'db, Db> {
     fn create(db: &'db Db) -> Self {
         Ro(db.ro())
     }
 }
-impl<'db, Db: Database> Corresponds<'db, Db> for Rw<'db, Db> {
+impl<'db, Db: Database<'db>> Corresponds<'db, Db> for Rw<'db, Db> {
     fn create(db: &'db Db) -> Self {
         Rw(db.rw())
     }
 }
-impl<'db, Db: Database> Corresponds<'db, Db> for NoTxn {
+impl<'db, Db: Database<'db>> Corresponds<'db, Db> for NoTxn {
     fn create(_db: &'db Db) -> Self {
         NoTxn
     }
 }
 
-pub trait AccessImpl<'db, Db: Database, P: Chain, Txn: Corresponds<'db, Db>, R: Executable<Txn>> {
+pub trait AccessImpl<'db, Db: Database<'db>, P: Chain, Txn: Corresponds<'db, Db>, R: Executable<Txn>> {
     type NoTxn: Corresponds<'db, Db>;
     type RoTxn: Corresponds<'db, Db> + CanRead;
     type RwTxn: Corresponds<'db, Db> + CanRead + CanWrite;
@@ -117,7 +114,7 @@ macro_rules! lazy {
             where $($bound)*
         {
             type Result = $res;
-            fn execute(self, $txn: $txn_ty, $path: &[u8]) -> Self::Result {
+            fn execute(self, $txn: &$txn_ty, $path: &[u8]) -> Self::Result {
                 let Self { $($arg,)* .. } = self;
                 $($body)*
             }
@@ -173,7 +170,7 @@ lazy!(
 );
 
 impl<'db, Db, P, Txn, R> Access<'db, Db, P, Txn, R> where
-    Db: Database,
+    Db: Database<'db>,
     P: Chain,
     Txn: Corresponds<'db, Db>,
     R: Executable<Txn>,
@@ -200,7 +197,7 @@ impl<'db, Db, P, Txn, R> Access<'db, Db, P, Txn, R> where
     pub fn execute(self) -> R::Result {
         let txn = Txn::create(self.db);
         let path = Chain::collect(self.path).into_bytes();
-        self.result.execute(txn, &path)
+        self.result.execute(&txn, &path)
     }
 }
 
@@ -211,10 +208,9 @@ pub struct NoTxn;
 // but D::RwTxn, D::RoTxn, NoTxn may equal to each other.
 // So it is impossible to implement AccessExt for Access<..., Db::R?Txn> directly
 // because of conflicting implementations.
-#[derive(Debug, Derivative)]
-#[derivative(Copy, Clone)]
-pub struct Ro<'db, D: Database>(&'db D::RoTxn);
-impl<'db, D: Database> CanRead for Ro<'db, D> {
+#[derive(Debug)]
+pub struct Ro<'db, D: Database<'db>>(D::RoTxn);
+impl<'db, D: Database<'db>> CanRead for Ro<'db, D> {
     fn get(&self, path: &[u8]) -> Vec<u8> {
         self.0.get(path)
     }
@@ -224,10 +220,9 @@ impl<'db, D: Database> CanRead for Ro<'db, D> {
     }
 }
 
-#[derive(Debug, Derivative)]
-#[derivative(Copy, Clone)]
-pub struct Rw<'db, D: Database>(&'db D::RwTxn);
-impl<'db, D: Database> CanRead for Rw<'db, D> {
+#[derive(Debug)]
+pub struct Rw<'db, D: Database<'db>>(D::RwTxn);
+impl<'db, D: Database<'db>> CanRead for Rw<'db, D> {
     fn get(&self, path: &[u8]) -> Vec<u8> {
         self.0.get(path)
     }
@@ -236,23 +231,23 @@ impl<'db, D: Database> CanRead for Rw<'db, D> {
         self.0.get_children(path)
     }
 }
-impl<'db, D: Database> CanWrite for Rw<'db, D> {
-    fn set(&self, path: &[u8], data: Vec<u8>) {
+impl<'db, D: Database<'db>> CanWrite for Rw<'db, D> {
+    fn set(&mut self, path: &[u8], data: &[u8]) {
         self.0.set(path, data)
     }
 
-    fn set_children(&self, parent: &[u8], children: ChildrenInfo) {
+    fn set_children(&mut self, parent: &[u8], children: &ChildrenInfo) {
         self.0.set_children(parent, children)
     }
 
-    fn remove(&self, path: &[u8]) {
+    fn remove(&mut self, path: &[u8]) {
         self.0.remove(path)
     }
 }
 
 // We can upgrade from NoTxn to Ro<Db> and from Ro<Db> to Rw<Db>, but we never will downgrade
 impl<'db, Db, P, R> AccessImpl<'db, Db, P, NoTxn, R> for Access<'db, Db, P, NoTxn, R> where
-    Db: Database,
+    Db: Database<'db>,
     P: Chain,
     NoTxn: Corresponds<'db, Db>,
     R: Executable<NoTxn>,
@@ -263,7 +258,7 @@ impl<'db, Db, P, R> AccessImpl<'db, Db, P, NoTxn, R> for Access<'db, Db, P, NoTx
 }
 
 impl<'db, Db, P, R> AccessImpl<'db, Db, P, Ro<'db, Db>, R> for Access<'db, Db, P, Ro<'db, Db>, R> where
-    Db: Database,
+    Db: Database<'db>,
     P: Chain,
     Ro<'db, Db>: Corresponds<'db, Db>,
     R: Executable<Ro<'db, Db>>,
@@ -274,7 +269,7 @@ impl<'db, Db, P, R> AccessImpl<'db, Db, P, Ro<'db, Db>, R> for Access<'db, Db, P
 }
 
 impl<'db, Db, P, R> AccessImpl<'db, Db, P, Rw<'db, Db>, R> for Access<'db, Db, P, Rw<'db, Db>, R> where
-    Db: Database,
+    Db: Database<'db>,
     P: Chain,
     Rw<'db, Db>: Corresponds<'db, Db>,
     R: Executable<Rw<'db, Db>>,
@@ -333,21 +328,21 @@ mod tests {
     path!(Root -> Foo);
 
     struct MockDb(MockTxn);
-    impl Database for MockDb {
-        type RoTxn = MockTxn;
-        type RwTxn = MockTxn;
+    impl<'db> Database<'db> for MockDb {
+        type RoTxn = &'db MockTxn;
+        type RwTxn = &'db MockTxn;
 
-        fn ro(&self) -> &Self::RoTxn {
+        fn ro(&'db self) -> Self::RoTxn {
             &self.0
         }
 
-        fn rw(&self) -> &Self::RwTxn {
+        fn rw(&'db self) -> Self::RwTxn {
             &self.0
         }
     }
 
     struct MockTxn;
-    impl CanRead for MockTxn {
+    impl<'db> CanRead for &'db MockTxn {
         fn get(&self, _path: &[u8]) -> Vec<u8> {
             panic!("MockTxn won't do anything")
         }
@@ -356,16 +351,16 @@ mod tests {
             panic!("MockTxn won't do anything")
         }
     }
-    impl CanWrite for MockTxn {
-        fn set(&self, _path: &[u8], _data: Vec<u8>) {
+    impl<'db> CanWrite for &'db MockTxn {
+        fn set(&mut self, _path: &[u8], _data: &[u8]) {
             panic!("MockTxn won't do anything")
         }
 
-        fn set_children(&self, _parent: &[u8], _children: ChildrenInfo) {
+        fn set_children(&mut self, _parent: &[u8], _children: &ChildrenInfo) {
             panic!("MockTxn won't do anything")
         }
 
-        fn remove(&self, _path: &[u8]) {
+        fn remove(&mut self, _path: &[u8]) {
             panic!("MockTxn won't do anything")
         }
     }
