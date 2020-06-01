@@ -288,7 +288,7 @@ mod test {
         ];
         let converted = PathBuf(expected
             .into_iter()
-            .map(|x| x.into_iter()
+            .map(|x| x.iter()
                 .map(|y| NonZeroU8::new(*y).unwrap())
                 .collect()
             )

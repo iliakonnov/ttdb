@@ -22,6 +22,7 @@ serde = { version="1.0", features=["derive"] }
 rand = { version="0.7", features=["small_rng"] }
 indexmap = { version="1.3", features=["serde-1"] }
 derivative = { version="2.1.1" }
+thiserror = "1.0"
 heed = { version="0.7.1", optional=true }
 
 [dependencies.fntools]

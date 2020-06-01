@@ -1,8 +1,41 @@
 use std::marker::PhantomData;
 use crate::hlist::{HList, Append, Nil, Cons};
 use crate::versions::Version;
-use crate::path::{Path, ChildrenInfo, Chain};
+use crate::path::{Path, Chain};
 use crate::versions;
+use std::error::Error;
+use thiserror::Error;
+
+#[derive(Debug, Clone, Copy, Error)]
+pub enum SetError<E: 'static + Error> {
+    #[error(transparent)]
+    Other(#[from] E)
+}
+pub type SetResult<R, T> = Result<R, SetError<<T as CanWrite>::SetErr>>;
+
+#[derive(Debug, Clone, Copy, Error)]
+pub enum RemoveError<E: 'static + Error> {
+    #[error("specified key not found")]
+    NoSuchKey,
+    #[error(transparent)]
+    Other(#[from] E)
+}
+pub type RemoveResult<R, T> = Result<R, RemoveError<<T as CanWrite>::RemoveErr>>;
+
+#[derive(Debug, Clone, Copy, Error)]
+pub enum GetError<E: 'static + Error> {
+    #[error("specified key not found")]
+    NoSuchKey,
+    #[error(transparent)]
+    Other(#[from] E)
+}
+pub type GetResult<R, T> = Result<R, GetError<<T as CanRead>::GetErr>>;
+
+#[derive(Debug, Clone, Copy)]
+pub enum Storage {
+    Data,
+    Children,
+}
 
 pub trait Database<'db>: Sized {
     type RoTxn: CanRead + 'db;
@@ -24,13 +57,14 @@ pub trait DatabaseExt<'db>: Database<'db> {
 }
 
 pub trait CanRead {
-    fn get(&self, path: &[u8]) -> Vec<u8>;
-    fn get_children(&self, path: &[u8]) -> ChildrenInfo;
+    type GetErr: Error;
+    fn get(&self, storage: Storage, path: &[u8]) -> GetResult<Vec<u8>, Self>;
 }
 pub trait CanWrite: CanRead {
-    fn set(&mut self, path: &[u8], data: &[u8]);
-    fn set_children(&mut self, parent: &[u8], children: &ChildrenInfo);
-    fn remove(&mut self, path: &[u8]);
+    type SetErr: Error;
+    fn set(&mut self, storage: Storage, path: &[u8], data: &[u8]) -> SetResult<(), Self>;
+    type RemoveErr: Error;
+    fn remove(&mut self, storage: Storage, path: &[u8]) -> RemoveResult<(), Self>;
 }
 
 #[derive(Debug)]
@@ -211,37 +245,30 @@ pub struct NoTxn;
 #[derive(Debug)]
 pub struct Ro<'db, D: Database<'db>>(D::RoTxn);
 impl<'db, D: Database<'db>> CanRead for Ro<'db, D> {
-    fn get(&self, path: &[u8]) -> Vec<u8> {
-        self.0.get(path)
-    }
-
-    fn get_children(&self, path: &[u8]) -> ChildrenInfo {
-        self.0.get_children(path)
+    type GetErr = <<D as Database<'db>>::RoTxn as CanRead>::GetErr;
+    fn get(&self, storage: Storage, path: &[u8]) -> GetResult<Vec<u8>, Self> {
+        self.0.get(storage, path)
     }
 }
 
 #[derive(Debug)]
 pub struct Rw<'db, D: Database<'db>>(D::RwTxn);
 impl<'db, D: Database<'db>> CanRead for Rw<'db, D> {
-    fn get(&self, path: &[u8]) -> Vec<u8> {
-        self.0.get(path)
-    }
-
-    fn get_children(&self, path: &[u8]) -> ChildrenInfo {
-        self.0.get_children(path)
+    type GetErr = <<D as Database<'db>>::RwTxn as CanRead>::GetErr;
+    fn get(&self, storage: Storage, path: &[u8]) -> GetResult<Vec<u8>, Self> {
+        self.0.get(storage, path)
     }
 }
 impl<'db, D: Database<'db>> CanWrite for Rw<'db, D> {
-    fn set(&mut self, path: &[u8], data: &[u8]) {
-        self.0.set(path, data)
+    type SetErr = <<D as Database<'db>>::RwTxn as CanWrite>::SetErr;
+    fn set(&mut self, storage: Storage, path: &[u8], data: &[u8]) -> SetResult<(), Self> {
+        self.0.set(storage, path, data)
     }
 
-    fn set_children(&mut self, parent: &[u8], children: &ChildrenInfo) {
-        self.0.set_children(parent, children)
-    }
 
-    fn remove(&mut self, path: &[u8]) {
-        self.0.remove(path)
+    type RemoveErr = <<D as Database<'db>>::RwTxn as CanWrite>::RemoveErr;
+    fn remove(&mut self, storage: Storage, path: &[u8]) -> RemoveResult<(), Self> {
+        self.0.remove(storage, path)
     }
 }
 
@@ -282,7 +309,8 @@ impl<'db, Db, P, R> AccessImpl<'db, Db, P, Rw<'db, Db>, R> for Access<'db, Db, P
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::path::{ChildrenInfo, Root};
+    use crate::path::Root;
+    use crate::storage::testdb::PanicDb;
     extern crate static_assertions as sa;
 
     // Unfortunately static_assertions does not support generics
@@ -311,14 +339,14 @@ mod tests {
     }
 
     assert_impl!(for<'db> where()
-        Access<'db, MockDb, HList![Root, Foo], NoTxn, Nil>
-            : AccessImpl<'db, MockDb, HList![Root, Foo], NoTxn, Nil>);
+        Access<'db, PanicDb, HList![Root, Foo], NoTxn, Nil>
+            : AccessImpl<'db, PanicDb, HList![Root, Foo], NoTxn, Nil>);
     assert_impl!(for<'db> where()
-        HList![LazyGet<i32>, LazySet<i32>]: Executable<Rw<'db, MockDb>>);
+        HList![LazyGet<i32>, LazySet<i32>]: Executable<Rw<'db, PanicDb>>);
 
     // We are interested only in type checking this code, so there is no #[test] attribute
     fn get_and_set_ty() {
-        let _: HList![i32, ()] = MockDb(MockTxn).access(hlist![Root, Foo])
+        let _: HList![i32, ()] = PanicDb.access(hlist![Root, Foo])
             .get::<i32>()
             .set(0_i32)
             .execute();
@@ -326,42 +354,4 @@ mod tests {
 
     path!(struct Foo[i32];);
     path!(Root -> Foo);
-
-    struct MockDb(MockTxn);
-    impl<'db> Database<'db> for MockDb {
-        type RoTxn = &'db MockTxn;
-        type RwTxn = &'db MockTxn;
-
-        fn ro(&'db self) -> Self::RoTxn {
-            &self.0
-        }
-
-        fn rw(&'db self) -> Self::RwTxn {
-            &self.0
-        }
-    }
-
-    struct MockTxn;
-    impl<'db> CanRead for &'db MockTxn {
-        fn get(&self, _path: &[u8]) -> Vec<u8> {
-            panic!("MockTxn won't do anything")
-        }
-
-        fn get_children(&self, _path: &[u8]) -> ChildrenInfo {
-            panic!("MockTxn won't do anything")
-        }
-    }
-    impl<'db> CanWrite for &'db MockTxn {
-        fn set(&mut self, _path: &[u8], _data: &[u8]) {
-            panic!("MockTxn won't do anything")
-        }
-
-        fn set_children(&mut self, _parent: &[u8], _children: &ChildrenInfo) {
-            panic!("MockTxn won't do anything")
-        }
-
-        fn remove(&mut self, _path: &[u8]) {
-            panic!("MockTxn won't do anything")
-        }
-    }
 }

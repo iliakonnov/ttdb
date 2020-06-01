@@ -1,27 +1,25 @@
-use crate::api::{Database, CanRead, CanWrite};
-use crate::path::ChildrenInfo;
-use heed::types::{OwnedSlice, SerdeBincode};
+use crate::api::{Database, CanRead, CanWrite, GetResult, SetResult, RemoveResult, Storage, GetError, SetError, RemoveError};
+use heed::types::OwnedSlice;
 use heed::EnvOpenOptions;
 use std::path::Path;
 use std::fs;
 
-type Storage<T=OwnedSlice<u8>> = heed::Database<OwnedSlice<u8>, T>;
-type Children = Storage<SerdeBincode<ChildrenInfo>>;
+type Data = heed::Database<OwnedSlice<u8>, OwnedSlice<u8>>;
 
 struct Databases {
-    storage: Storage,
-    children: Children,
+    data: Data,
+    children: Data,
 }
 
 struct HeedDb {
     env: heed::Env,
-    db: Databases
+    dbs: Databases
 }
 
 #[derive(Copy, Clone)]
 struct Transaction<'db, T> where T: 'db {
     txn: T,
-    db: &'db Databases
+    dbs: &'db Databases
 }
 
 impl HeedDb {
@@ -32,8 +30,8 @@ impl HeedDb {
         let children = env.create_database(Some("children")).map_err(|_| ())?;
         Ok(HeedDb {
             env,
-            db: Databases {
-                storage,
+            dbs: Databases {
+                data: storage,
                 children
             }
         })
@@ -47,14 +45,14 @@ impl<'db> Database<'db> for HeedDb {
     fn ro(&'db self) -> Self::RoTxn {
         Transaction {
             txn: self.env.read_txn().unwrap(),
-            db: &self.db
+            dbs: &self.dbs
         }
     }
 
     fn rw(&'db self) -> Self::RwTxn {
         Transaction {
             txn: self.env.write_txn().unwrap(),
-            db: &self.db
+            dbs: &self.dbs
         }
     }
 }
@@ -69,28 +67,45 @@ impl<'a> Readable for heed::RwTxn<'a> {
     fn readable(&self) -> &heed::RoTxn {self}
 }
 
-impl<'db, T: Readable> CanRead for Transaction<'db, T> {
-    fn get(&self, path: &[u8]) -> Vec<u8> {
-        let data = self.db.storage.get(self.txn.readable(), path).unwrap();
-        data.unwrap()
+impl Storage {
+    fn get_db(self, dbs: &Databases) -> &Data {
+        match self {
+            Storage::Data => &dbs.data,
+            Storage::Children => &dbs.children,
+        }
     }
+}
 
-    fn get_children(&self, path: &[u8]) -> ChildrenInfo {
-        let data = self.db.children.get(self.txn.readable(), path).unwrap();
-        data.unwrap()
+impl<'db, T: Readable> CanRead for Transaction<'db, T> {
+    type GetErr = heed::Error;
+    fn get(&self, storage: Storage, path: &[u8]) -> GetResult<Vec<u8>, Self> {
+        let res = storage.get_db(self.dbs)
+            .get(self.txn.readable(), path);
+        match res {
+            Ok(Some(x)) => Ok(x),
+            Ok(None) => Err(GetError::NoSuchKey),
+            Err(e) => Err(GetError::Other(e))
+        }
     }
 }
 
 impl<'db> CanWrite for Transaction<'db, heed::RwTxn<'db>> {
-    fn set(&mut self, path: &[u8], data: &[u8]) {
-        self.db.storage.put(&mut self.txn, path, data).unwrap();
+    type SetErr = heed::Error;
+    fn set(&mut self, storage: Storage, path: &[u8], data: &[u8]) -> SetResult<(), Self> {
+        storage.get_db(self.dbs)
+            .put(&mut self.txn, path, data)
+            .map_err(SetError::Other)
     }
 
-    fn set_children(&mut self, parent: &[u8], children: &ChildrenInfo) {
-        self.db.children.put(&mut self.txn, parent, children).unwrap();
-    }
-
-    fn remove(&mut self, path: &[u8]) {
-        self.db.children.delete(&mut self.txn, path).unwrap();
+    type RemoveErr = heed::Error;
+    fn remove(&mut self, storage: Storage, path: &[u8]) -> RemoveResult<(), Self> {
+        let res = storage.get_db(self.dbs)
+            .delete(&mut self.txn, path)
+            .map_err(RemoveError::Other)?;
+        if res {
+            Ok(())
+        } else {
+            Err(RemoveError::NoSuchKey)
+        }
     }
 }

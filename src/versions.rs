@@ -455,7 +455,7 @@ mod test {
     }
 
     #[test]
-    #[allow(clippy::shadow_unrelated)]
+    #[allow(clippy::shadow_unrelated, clippy::similar_names)]
     fn migrations() {
         // Upgrading
         let (version, data) = (Foo::VERSION, Foo.save().unwrap());

@@ -17,7 +17,6 @@
     trivial_casts,
     trivial_numeric_casts,
     unused_import_braces,
-    unused_qualifications,
     variant_size_differences,
     clippy::all,
     clippy::pedantic,
