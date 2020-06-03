@@ -1,4 +1,5 @@
-use crate::api::{Database, CanRead, CanWrite, GetResult, SetResult, RemoveResult, Storage, GetError, SetError, RemoveError};
+use crate::api::{Database, CanRead, CanWrite, Storage};
+use crate::error::prelude::*;
 use heed::types::OwnedSlice;
 use heed::EnvOpenOptions;
 use std::path::Path;
@@ -78,34 +79,35 @@ impl Storage {
 
 impl<'db, T: Readable> CanRead for Transaction<'db, T> {
     type GetErr = heed::Error;
-    fn get(&self, storage: Storage, path: &[u8]) -> GetResult<Vec<u8>, Self> {
+    fn get(&self, storage: Storage, path: &[u8]) -> results::GetResult<Vec<u8>, Self> {
         let res = storage.get_db(self.dbs)
             .get(self.txn.readable(), path);
         match res {
             Ok(Some(x)) => Ok(x),
-            Ok(None) => Err(GetError::NoSuchKey),
-            Err(e) => Err(GetError::Other(e))
+            Ok(None) => Err(errors::KeyNotFound::err()),
+            Err(e) => Err(errors::Storage(e).into())
         }
     }
 }
 
 impl<'db> CanWrite for Transaction<'db, heed::RwTxn<'db>> {
     type SetErr = heed::Error;
-    fn set(&mut self, storage: Storage, path: &[u8], data: &[u8]) -> SetResult<(), Self> {
+    fn set(&mut self, storage: Storage, path: &[u8], data: &[u8]) -> results::SetResult<(), Self> {
         storage.get_db(self.dbs)
             .put(&mut self.txn, path, data)
-            .map_err(SetError::Other)
+            .map_err(errors::Storage)?;
+        Ok(())
     }
 
     type RemoveErr = heed::Error;
-    fn remove(&mut self, storage: Storage, path: &[u8]) -> RemoveResult<(), Self> {
+    fn remove(&mut self, storage: Storage, path: &[u8]) -> results::RemoveResult<(), Self> {
         let res = storage.get_db(self.dbs)
             .delete(&mut self.txn, path)
-            .map_err(RemoveError::Other)?;
+            .map_err(errors::Storage)?;
         if res {
             Ok(())
         } else {
-            Err(RemoveError::NoSuchKey)
+            Err( errors::KeyNotFound::err())
         }
     }
 }
