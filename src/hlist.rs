@@ -71,30 +71,22 @@ macro_rules! unpack_impl {
 
 for_tuples!(A, B, C, D, E, F, G, H, I, J, K, L, # unpack_impl);
 
-pub trait SplitRes: HList {
+pub trait UnwrapAll: HList {
     type Good: HList;
-    type Fail: HList;
-    fn split_res(self) -> (Self::Good, Self::Fail);
+    fn unwrap_all(self) -> Self::Good;
 }
 
-impl SplitRes for Nil {
-    type Good = Self;
-    type Fail = Self;
-    fn split_res(self) -> (Self::Good, Self::Fail) {
-        (Self, Self)
-    }
+impl UnwrapAll for Nil {
+    type Good = Nil;
+    fn unwrap_all(self) -> Self::Good { Nil }
 }
 
-impl<T, E, L: SplitRes> SplitRes for Cons<Result<T, E>, L> {
-    type Good = Cons<Option<T>, L::Good>;
-    type Fail = Cons<Option<E>, L::Fail>;
-    fn split_res(self) -> (Self::Good, Self::Fail) {
-        let (g, f) = match self.0 {
-            Ok(g) => (Some(g), None),
-            Err(f) => (None, Some(f)),
-        };
-        let (gs, fs) = self.1.split_res();
-        (Cons(g, gs), Cons(f, fs))
+impl<T, E: std::fmt::Debug, L: UnwrapAll> UnwrapAll for Cons<Result<T, E>, L> {
+    type Good = Cons<T, L::Good>;
+    fn unwrap_all(self) -> Self::Good {
+        let unwrapped = self.0.unwrap();
+        let rem = self.1.unwrap_all();
+        Cons(unwrapped, rem)
     }
 }
 
@@ -258,12 +250,10 @@ mod test {
     }
 
     #[test]
-    fn split() {
-        type R = Result<u8, u8>;
-        let list = Cons(R::Err(1), Cons(R::Ok(2), Cons(R::Err(3), Nil)));
-        let (good, fail) = list.split_res();
-        assert_eq!(good.unpack(), (None, Some(2), None));
-        assert_eq!(fail.unpack(), (Some(1), None, Some(3)));
+    fn unwrap_all() {
+        let list: HList![Result<i32, ()>, Result<char, ()>] = hlist![Ok(1), Ok('a')];
+        let unwrapped: (i32, char) = list.unwrap_all().unpack();
+        assert_eq!(unwrapped, (1, 'a'));
     }
 
     #[test]

@@ -20,6 +20,11 @@ impl<'db> Database<'db> for PanicDb {
 }
 
 impl<'db> CanRead for PanicTxn {
+    type ExistsErr = !;
+    fn exists(&self, _storage: Storage, _path: &[u8]) -> Result<bool, Self::ExistsErr> {
+        panic!("PanicDb will only panic")
+    }
+
     type GetErr = !;
     fn get(&self, _storage: Storage, _path: &[u8]) -> Result<Vec<u8>, GetError<!>> {
         panic!("PanicDb will only panic")

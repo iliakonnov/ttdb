@@ -77,6 +77,16 @@ impl Storage {
 }
 
 impl<'db, T: Readable> CanRead for Transaction<'db, T> {
+    type ExistsErr = heed::Error;
+    fn exists(&self, storage: Storage, path: &[u8]) -> Result<bool, Self::ExistsErr> {
+        match self.get(storage, path) {
+            Ok(_) => Ok(true),
+            Err(GetError::NoSuchPath) => Ok(false),
+            Err(GetError::Other(e)) => Err(e),
+            Err(GetError::DeserializationError(_)) => unreachable!()
+        }
+    }
+
     type GetErr = heed::Error;
     fn get(&self, storage: Storage, path: &[u8]) -> Result<Vec<u8>, GetError<Self::GetErr>> {
         let res = storage.get_db(self.dbs)
@@ -84,7 +94,7 @@ impl<'db, T: Readable> CanRead for Transaction<'db, T> {
         match res {
             Ok(Some(x)) => Ok(x),
             Ok(None) => Err(GetError::NoSuchPath),
-            Err(e) => Err(GetError::Other(e).into())
+            Err(e) => Err(GetError::Other(e))
         }
     }
 }

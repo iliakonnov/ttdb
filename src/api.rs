@@ -5,6 +5,7 @@ use crate::path::{Path, Chain};
 use crate::versions;
 
 #[derive(Debug, Clone, Copy)]
+#[repr(u8)]
 pub enum Storage {
     Data,
     Children,
@@ -37,6 +38,9 @@ pub enum GetError<T> {
 }
 
 pub trait CanRead {
+    type ExistsErr;
+    fn exists(&self, storage: Storage, path: &[u8]) -> Result<bool, Self::ExistsErr>;
+
     type GetErr;
     fn get(&self, storage: Storage, path: &[u8]) -> Result<Vec<u8>, GetError<Self::GetErr>>;
 }
@@ -69,18 +73,18 @@ pub struct Access<'db, Db, P, Txn, R> {
 
 pub trait Lazy<Txn> {
     type Result;
-    fn execute(self, txn: &Txn, path: &[u8]) -> Self::Result;
+    fn execute(self, txn: &mut Txn, path: &[u8]) -> Self::Result;
 }
 
 pub trait Executable<Txn>: HList {
     type Result: HList;
-    fn execute(self, txn: &Txn, path: &[u8]) -> Self::Result;
+    fn execute(self, txn: &mut Txn, path: &[u8]) -> Self::Result;
 }
 
 impl<Txn> Executable<Txn> for Nil {
     type Result = Nil;
 
-    fn execute(self, _txn: &Txn, _path: &[u8]) -> Self::Result {
+    fn execute(self, _txn: &mut Txn, _path: &[u8]) -> Self::Result {
         Nil
     }
 }
@@ -90,7 +94,7 @@ impl<Txn, T, L> Executable<Txn> for Cons<T, L> where
 {
     type Result = Cons<T::Result, L::Result>;
 
-    fn execute(self, txn: &Txn, path: &[u8]) -> Self::Result {
+    fn execute(self, txn: &mut Txn, path: &[u8]) -> Self::Result {
         Cons(self.0.execute(txn, path), self.1.execute(txn, path))
     }
 }
@@ -131,7 +135,7 @@ macro_rules! lazy {
         $($body:tt)*
      }
     ) => {
-        #[derive(Debug)]
+        #[derive(Debug, Clone, Copy)]
         $vis struct $name<$($generics),*> {
             $( $arg : $ty ,)*
             $( $ignored : $ign_ty ,)*
@@ -140,7 +144,7 @@ macro_rules! lazy {
             where $($bound)*
         {
             type Result = $res;
-            fn execute(self, $txn: &$txn_ty, $path: &[u8]) -> Self::Result {
+            fn execute(self, $txn: &mut $txn_ty, $path: &[u8]) -> Self::Result {
                 let Self { $($arg,)* .. } = self;
                 $($body)*
             }
@@ -179,7 +183,7 @@ lazy!(
     pub LazyGet<V> where (V: Version + versions::Serde) { phantom: PhantomData<V> }
     Path=path
     txn=Txn: CanRead
-    | | -> V {
+    | | -> Result<V, GetError<Txn::GetErr>> {
         let _ = (path, txn);
         todo!()
     }
@@ -189,9 +193,18 @@ lazy!(
     pub LazySet<V> where (V: Version + versions::Serde) {}
     Path=path
     txn=Txn: CanWrite
-    | val: V | -> () {
-        let _ = (val, path, txn);
-        todo!()
+    | val: V | -> Result<(), SetError<Txn::SetErr>> {
+        let data = val.save().map_err(SetError::SerializationError)?;
+        txn.set(Storage::Data, path, &data)
+    }
+);
+
+lazy!(
+    pub LazyRemove<> where () {}
+    Path=path
+    txn=Txn: CanWrite
+    | | -> Result<(), RemoveError<Txn::RemoveErr>> {
+        txn.remove(Storage::Data, path)
     }
 );
 
@@ -220,10 +233,16 @@ impl<'db, Db, P, Txn, R> Access<'db, Db, P, Txn, R> where
         })
     }
 
+    pub fn remove<V>(self) -> returns!(RwTxn => LazyRemove) where
+        R: Append<LazyRemove>
+    {
+        returns!(self => LazyRemove {})
+    }
+
     pub fn execute(self) -> R::Result {
-        let txn = Txn::create(self.db);
+        let mut txn = Txn::create(self.db);
         let path = Chain::collect(self.path).into_bytes();
-        self.result.execute(&txn, &path)
+        self.result.execute(&mut txn, &path)
     }
 }
 
@@ -237,6 +256,11 @@ pub struct NoTxn;
 #[derive(Debug)]
 pub struct Ro<'db, D: Database<'db>>(D::RoTxn);
 impl<'db, D: Database<'db>> CanRead for Ro<'db, D> {
+    type ExistsErr = <<D as Database<'db>>::RoTxn as CanRead>::ExistsErr;
+    fn exists(&self, storage: Storage, path: &[u8]) -> Result<bool, Self::ExistsErr> {
+        self.0.exists(storage, path)
+    }
+
     type GetErr = <<D as Database<'db>>::RoTxn as CanRead>::GetErr;
     fn get(&self, storage: Storage, path: &[u8]) -> Result<Vec<u8>, GetError<Self::GetErr>> {
         self.0.get(storage, path)
@@ -246,6 +270,11 @@ impl<'db, D: Database<'db>> CanRead for Ro<'db, D> {
 #[derive(Debug)]
 pub struct Rw<'db, D: Database<'db>>(D::RwTxn);
 impl<'db, D: Database<'db>> CanRead for Rw<'db, D> {
+    type ExistsErr = <<D as Database<'db>>::RwTxn as CanRead>::ExistsErr;
+    fn exists(&self, storage: Storage, path: &[u8]) -> Result<bool, Self::ExistsErr> {
+        self.0.exists(storage, path)
+    }
+
     type GetErr = <<D as Database<'db>>::RwTxn as CanRead>::GetErr;
     fn get(&self, storage: Storage, path: &[u8]) -> Result<Vec<u8>, GetError<Self::GetErr>> {
         self.0.get(storage, path)
@@ -337,10 +366,12 @@ mod tests {
 
     // We are interested only in type checking this code, so there is no #[test] attribute
     fn get_and_set_ty() {
+        use crate::hlist::UnwrapAll;
         let _: HList![i32, ()] = PanicDb.access(hlist![Root, Foo])
             .get::<i32>()
             .set(0_i32)
-            .execute();
+            .execute()
+            .unwrap_all();
     }
 
     path!(struct Foo[i32];);
