@@ -1,5 +1,4 @@
-use crate::api::{Database, CanRead, CanWrite, Storage};
-use crate::error::prelude::*;
+use crate::api::{Database, CanRead, CanWrite, Storage, GetError, SetError, RemoveError};
 
 /// Database storage that only panic
 #[derive(Copy, Clone, Debug)]
@@ -22,18 +21,18 @@ impl<'db> Database<'db> for PanicDb {
 
 impl<'db> CanRead for PanicTxn {
     type GetErr = !;
-    fn get(&self, _storage: Storage, _path: &[u8]) -> results::GetResult<Vec<u8>, Self> {
+    fn get(&self, _storage: Storage, _path: &[u8]) -> Result<Vec<u8>, GetError<!>> {
         panic!("PanicDb will only panic")
     }
 }
 impl<'db> CanWrite for PanicTxn {
     type SetErr = !;
-    fn set(&mut self, _storage: Storage, _path: &[u8], _data: &[u8]) -> results::SetResult<(), Self> {
+    fn set(&mut self, _storage: Storage, _path: &[u8], _data: &[u8]) -> Result<(), SetError<!>> {
         panic!("PanicDb will only panic")
     }
 
     type RemoveErr = !;
-    fn remove(&mut self, _storage: Storage, _path: &[u8]) -> results::RemoveResult<(), Self> {
+    fn remove(&mut self, _storage: Storage, _path: &[u8]) -> Result<(), RemoveError<!>> {
         panic!("PanicDb will only panic")
     }
 }

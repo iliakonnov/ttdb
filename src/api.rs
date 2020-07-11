@@ -3,7 +3,6 @@ use crate::hlist::{HList, Append, Nil, Cons};
 use crate::versions::Version;
 use crate::path::{Path, Chain};
 use crate::versions;
-use crate::error::prelude::*;
 
 #[derive(Debug, Clone, Copy)]
 pub enum Storage {
@@ -30,15 +29,34 @@ pub trait DatabaseExt<'db>: Database<'db> {
     }
 }
 
+#[derive(Debug)]
+pub enum GetError<T> {
+    NoSuchPath,
+    DeserializationError(Box<dyn std::error::Error>),
+    Other(T)
+}
+
 pub trait CanRead {
-    type GetErr: err_kinds::Storage;
-    fn get(&self, storage: Storage, path: &[u8]) -> results::GetResult<Vec<u8>, Self>;
+    type GetErr;
+    fn get(&self, storage: Storage, path: &[u8]) -> Result<Vec<u8>, GetError<Self::GetErr>>;
+}
+
+#[derive(Debug)]
+pub enum SetError<T> {
+    NoParentExists,
+    SerializationError(Box<dyn std::error::Error>),
+    Other(T)
+}
+#[derive(Debug)]
+pub enum RemoveError<T> {
+    NoSuchPath,
+    Other(T)
 }
 pub trait CanWrite: CanRead {
-    type SetErr: err_kinds::Storage;
-    fn set(&mut self, storage: Storage, path: &[u8], data: &[u8]) -> results::SetResult<(), Self>;
-    type RemoveErr: err_kinds::Storage;
-    fn remove(&mut self, storage: Storage, path: &[u8]) -> results::RemoveResult<(), Self>;
+    type SetErr;
+    fn set(&mut self, storage: Storage, path: &[u8], data: &[u8]) -> Result<(), SetError<Self::SetErr>>;
+    type RemoveErr;
+    fn remove(&mut self, storage: Storage, path: &[u8]) -> Result<(), RemoveError<Self::RemoveErr>>;
 }
 
 #[derive(Debug)]
@@ -220,7 +238,7 @@ pub struct NoTxn;
 pub struct Ro<'db, D: Database<'db>>(D::RoTxn);
 impl<'db, D: Database<'db>> CanRead for Ro<'db, D> {
     type GetErr = <<D as Database<'db>>::RoTxn as CanRead>::GetErr;
-    fn get(&self, storage: Storage, path: &[u8]) -> results::GetResult<Vec<u8>, Self> {
+    fn get(&self, storage: Storage, path: &[u8]) -> Result<Vec<u8>, GetError<Self::GetErr>> {
         self.0.get(storage, path)
     }
 }
@@ -229,19 +247,18 @@ impl<'db, D: Database<'db>> CanRead for Ro<'db, D> {
 pub struct Rw<'db, D: Database<'db>>(D::RwTxn);
 impl<'db, D: Database<'db>> CanRead for Rw<'db, D> {
     type GetErr = <<D as Database<'db>>::RwTxn as CanRead>::GetErr;
-    fn get(&self, storage: Storage, path: &[u8]) -> results::GetResult<Vec<u8>, Self> {
+    fn get(&self, storage: Storage, path: &[u8]) -> Result<Vec<u8>, GetError<Self::GetErr>> {
         self.0.get(storage, path)
     }
 }
 impl<'db, D: Database<'db>> CanWrite for Rw<'db, D> {
     type SetErr = <<D as Database<'db>>::RwTxn as CanWrite>::SetErr;
-    fn set(&mut self, storage: Storage, path: &[u8], data: &[u8]) -> results::SetResult<(), Self> {
+    fn set(&mut self, storage: Storage, path: &[u8], data: &[u8]) -> Result<(), SetError<Self::SetErr>> {
         self.0.set(storage, path, data)
     }
 
-
     type RemoveErr = <<D as Database<'db>>::RwTxn as CanWrite>::RemoveErr;
-    fn remove(&mut self, storage: Storage, path: &[u8]) -> results::RemoveResult<(), Self> {
+    fn remove(&mut self, storage: Storage, path: &[u8]) -> Result<(), RemoveError<Self::RemoveErr>> {
         self.0.remove(storage, path)
     }
 }

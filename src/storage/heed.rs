@@ -1,5 +1,4 @@
-use crate::api::{Database, CanRead, CanWrite, Storage};
-use crate::error::prelude::*;
+use crate::api::{Database, CanRead, CanWrite, Storage, GetError, SetError, RemoveError};
 use heed::types::OwnedSlice;
 use heed::EnvOpenOptions;
 use std::path::Path;
@@ -79,35 +78,36 @@ impl Storage {
 
 impl<'db, T: Readable> CanRead for Transaction<'db, T> {
     type GetErr = heed::Error;
-    fn get(&self, storage: Storage, path: &[u8]) -> results::GetResult<Vec<u8>, Self> {
+    fn get(&self, storage: Storage, path: &[u8]) -> Result<Vec<u8>, GetError<Self::GetErr>> {
         let res = storage.get_db(self.dbs)
             .get(self.txn.readable(), path);
         match res {
             Ok(Some(x)) => Ok(x),
-            Ok(None) => Err(errors::KeyNotFound::err()),
-            Err(e) => Err(errors::Storage(e).into())
+            Ok(None) => Err(GetError::NoSuchPath),
+            Err(e) => Err(GetError::Other(e).into())
         }
     }
 }
 
 impl<'db> CanWrite for Transaction<'db, heed::RwTxn<'db>> {
     type SetErr = heed::Error;
-    fn set(&mut self, storage: Storage, path: &[u8], data: &[u8]) -> results::SetResult<(), Self> {
+    fn set(&mut self, storage: Storage, path: &[u8], data: &[u8]) -> Result<(), SetError<Self::SetErr>> {
+        // FIXME: Test for parent to exist
         storage.get_db(self.dbs)
             .put(&mut self.txn, path, data)
-            .map_err(errors::Storage)?;
+            .map_err(SetError::Other)?;
         Ok(())
     }
 
     type RemoveErr = heed::Error;
-    fn remove(&mut self, storage: Storage, path: &[u8]) -> results::RemoveResult<(), Self> {
+    fn remove(&mut self, storage: Storage, path: &[u8]) -> Result<(), RemoveError<Self::RemoveErr>> {
         let res = storage.get_db(self.dbs)
             .delete(&mut self.txn, path)
-            .map_err(errors::Storage)?;
+            .map_err(RemoveError::Other)?;
         if res {
             Ok(())
         } else {
-            Err( errors::KeyNotFound::err())
+            Err( RemoveError::NoSuchPath)
         }
     }
 }
