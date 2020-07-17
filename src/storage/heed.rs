@@ -1,4 +1,5 @@
 use crate::api::{Database, CanRead, CanWrite, Storage, GetError, SetError, RemoveError};
+use crate::error::{self, kinds as ekind};
 use heed::types::OwnedSlice;
 use heed::EnvOpenOptions;
 use std::path::Path;
@@ -76,19 +77,20 @@ impl Storage {
     }
 }
 
+type ErrorBase = error::Extend<ekind::StorageError<heed::Error>>;
+
 impl<'db, T: Readable> CanRead for Transaction<'db, T> {
-    type ExistsErr = heed::Error;
+    type ExistsErr = ErrorBase;
     fn exists(&self, storage: Storage, path: &[u8]) -> Result<bool, Self::ExistsErr> {
         match self.get(storage, path) {
             Ok(_) => Ok(true),
-            Err(GetError::NoSuchPath) => Ok(false),
-            Err(GetError::Other(e)) => Err(e),
-            Err(GetError::DeserializationError(_)) => unreachable!()
+            Err(error::Error::NoSuchKey(_)) => Ok(false),
+            Err(error::Error::StorageError(e)) => Err(error::Error::StorageError(e)),
         }
     }
 
-    type GetErr = heed::Error;
-    fn get(&self, storage: Storage, path: &[u8]) -> Result<Vec<u8>, GetError<Self::GetErr>> {
+    type GetErr = crate::Error![(ErrorBase) ekind::NoSuchKey<()>];
+    fn get(&self, storage: Storage, path: &[u8]) -> Result<Vec<u8>, Self::GetErr> {
         let res = storage.get_db(self.dbs)
             .get(self.txn.readable(), path);
         match res {
@@ -100,8 +102,8 @@ impl<'db, T: Readable> CanRead for Transaction<'db, T> {
 }
 
 impl<'db> CanWrite for Transaction<'db, heed::RwTxn<'db>> {
-    type SetErr = heed::Error;
-    fn set(&mut self, storage: Storage, path: &[u8], data: &[u8]) -> Result<(), SetError<Self::SetErr>> {
+    type SetErr = ErrorBase;
+    fn set(&mut self, storage: Storage, path: &[u8], data: &[u8]) -> Result<(), Self::SetErr> {
         // FIXME: Test for parent to exist
         storage.get_db(self.dbs)
             .put(&mut self.txn, path, data)
@@ -109,15 +111,15 @@ impl<'db> CanWrite for Transaction<'db, heed::RwTxn<'db>> {
         Ok(())
     }
 
-    type RemoveErr = heed::Error;
-    fn remove(&mut self, storage: Storage, path: &[u8]) -> Result<(), RemoveError<Self::RemoveErr>> {
+    type RemoveErr = crate::Error![(ErrorBase) ekind::NoSuchKey<()>];
+    fn remove(&mut self, storage: Storage, path: &[u8]) -> Result<(), Self::RemoveErr> {
         let res = storage.get_db(self.dbs)
             .delete(&mut self.txn, path)
             .map_err(RemoveError::Other)?;
         if res {
             Ok(())
         } else {
-            Err( RemoveError::NoSuchPath)
+            Err(RemoveError::NoSuchPath)
         }
     }
 }

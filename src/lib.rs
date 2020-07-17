@@ -11,6 +11,8 @@
     const_raw_ptr_deref,
     generic_associated_types,
     trivial_bounds,
+    associated_type_defaults,
+    trait_alias
 )]
 #![warn(
     missing_docs,
@@ -39,6 +41,7 @@
 pub mod reservoir;
 #[macro_use] pub mod path;
 
+pub mod utils;
 pub mod error;
 pub mod api;
 pub mod storage;
