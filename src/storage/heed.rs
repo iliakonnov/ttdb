@@ -1,4 +1,4 @@
-use crate::api::{Database, CanRead, CanWrite, Storage, GetError, SetError, RemoveError};
+use crate::api::storage::*;
 use heed::types::OwnedSlice;
 use heed::EnvOpenOptions;
 use std::path::Path;

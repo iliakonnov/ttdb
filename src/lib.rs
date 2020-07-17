@@ -39,6 +39,5 @@
 pub mod reservoir;
 #[macro_use] pub mod path;
 
-pub mod error;
 pub mod api;
 pub mod storage;

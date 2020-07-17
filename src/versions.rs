@@ -101,7 +101,8 @@ pub trait LastVersionRef where
     Self: Version,
     // Последняя версия обязательно должна находиться в той же цепочке, что и эта версия
     Self::LastVersion: Version<FirstVersion=Self::FirstVersion>,
-    Self::LastVersion: LastVersion,
+    // Это так, но не удается убедить в этом компилятор
+    // Self::LastVersion: LastVersion,
 {
     type LastVersion;
 }

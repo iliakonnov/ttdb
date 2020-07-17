@@ -1,4 +1,4 @@
-use crate::api::{Database, CanRead, CanWrite, Storage, GetError, SetError, RemoveError};
+use crate::api::storage::*;
 
 /// Database storage that only panic
 #[derive(Copy, Clone, Debug)]
