@@ -3,7 +3,6 @@ use crate::hlist::{HList, Append, Nil, Cons};
 use crate::versions::Version;
 use crate::path::{Path, Chain};
 use crate::versions;
-use crate::error::{self, kinds as ekind};
 
 #[derive(Debug, Clone, Copy)]
 #[repr(u8)]
@@ -39,11 +38,11 @@ pub enum GetError<T> {
 }
 
 pub trait CanRead {
-    type ExistsErr: error::KindsEnabled;
+    type ExistsErr;
     fn exists(&self, storage: Storage, path: &[u8]) -> Result<bool, Self::ExistsErr>;
 
-    type GetErr: error::KindsEnabled;
-    fn get(&self, storage: Storage, path: &[u8]) -> Result<Vec<u8>, Self::GetErr>;
+    type GetErr;
+    fn get(&self, storage: Storage, path: &[u8]) -> Result<Vec<u8>, GetError<Self::GetErr>>;
 }
 
 #[derive(Debug)]
@@ -58,11 +57,10 @@ pub enum RemoveError<T> {
     Other(T)
 }
 pub trait CanWrite: CanRead {
-    type SetErr: error::KindsEnabled;
-    fn set(&mut self, storage: Storage, path: &[u8], data: &[u8]) -> Result<(), Self::SetErr>;
-
-    type RemoveErr: error::KindsEnabled;
-    fn remove(&mut self, storage: Storage, path: &[u8]) -> Result<(), Self::RemoveErr>;
+    type SetErr;
+    fn set(&mut self, storage: Storage, path: &[u8], data: &[u8]) -> Result<(), SetError<Self::SetErr>>;
+    type RemoveErr;
+    fn remove(&mut self, storage: Storage, path: &[u8]) -> Result<(), RemoveError<Self::RemoveErr>>;
 }
 
 #[derive(Debug)]
@@ -185,24 +183,19 @@ lazy!(
     pub LazyGet<V> where (V: Version + versions::Serde) { phantom: PhantomData<V> }
     Path=path
     txn=Txn: CanRead
-    | | -> Result<V, Txn::GetErr> {
+    | | -> Result<V, GetError<Txn::GetErr>> {
         let _ = (path, txn);
         todo!()
     }
 );
 
 lazy!(
-    pub LazySet<V> where (
-        V: Version + versions::Serde,
-        <Txn as api::CanWrite>::SetErr: error::SetKind<error::kinds::SerializationError>
-    ) {}
+    pub LazySet<V> where (V: Version + versions::Serde) {}
     Path=path
     txn=Txn: CanWrite
-    | val: V | -> Result<(), crate::Error![(Txn::SetErr) ekind::SerializationError] > {
-        match val.save() {
-            Err(e) => todo!(),
-            Ok(data) => txn.set(Storage::Data, path, &data),
-        }
+    | val: V | -> Result<(), SetError<Txn::SetErr>> {
+        let data = val.save().map_err(SetError::SerializationError)?;
+        txn.set(Storage::Data, path, &data)
     }
 );
 
@@ -210,7 +203,7 @@ lazy!(
     pub LazyRemove<> where () {}
     Path=path
     txn=Txn: CanWrite
-    | | -> Result<(), Txn::RemoveErr> {
+    | | -> Result<(), RemoveError<Txn::RemoveErr>> {
         txn.remove(Storage::Data, path)
     }
 );
@@ -269,7 +262,7 @@ impl<'db, D: Database<'db>> CanRead for Ro<'db, D> {
     }
 
     type GetErr = <<D as Database<'db>>::RoTxn as CanRead>::GetErr;
-    fn get(&self, storage: Storage, path: &[u8]) -> Result<Vec<u8>, Self::GetErr> {
+    fn get(&self, storage: Storage, path: &[u8]) -> Result<Vec<u8>, GetError<Self::GetErr>> {
         self.0.get(storage, path)
     }
 }
@@ -283,18 +276,18 @@ impl<'db, D: Database<'db>> CanRead for Rw<'db, D> {
     }
 
     type GetErr = <<D as Database<'db>>::RwTxn as CanRead>::GetErr;
-    fn get(&self, storage: Storage, path: &[u8]) -> Result<Vec<u8>, Self::GetErr> {
+    fn get(&self, storage: Storage, path: &[u8]) -> Result<Vec<u8>, GetError<Self::GetErr>> {
         self.0.get(storage, path)
     }
 }
 impl<'db, D: Database<'db>> CanWrite for Rw<'db, D> {
     type SetErr = <<D as Database<'db>>::RwTxn as CanWrite>::SetErr;
-    fn set(&mut self, storage: Storage, path: &[u8], data: &[u8]) -> Result<(), Self::SetErr> {
+    fn set(&mut self, storage: Storage, path: &[u8], data: &[u8]) -> Result<(), SetError<Self::SetErr>> {
         self.0.set(storage, path, data)
     }
 
     type RemoveErr = <<D as Database<'db>>::RwTxn as CanWrite>::RemoveErr;
-    fn remove(&mut self, storage: Storage, path: &[u8]) -> Result<(), Self::RemoveErr> {
+    fn remove(&mut self, storage: Storage, path: &[u8]) -> Result<(), RemoveError<Self::RemoveErr>> {
         self.0.remove(storage, path)
     }
 }
