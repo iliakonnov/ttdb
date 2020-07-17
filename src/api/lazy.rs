@@ -7,22 +7,75 @@ use crate::versions;
 
 impl<'db, T: Database<'db>> DatabaseExt<'db> for T {}
 pub trait DatabaseExt<'db>: Database<'db> {
-    fn access<P: Chain>(&self, path: P) -> Access<Self, P, NoTxn, Nil> {
-        Access {
+    fn lazy(&self) -> AccessMany<Self, NoTxn, Nil> {
+        AccessMany {
             db: self,
-            path,
+            txn: PhantomData::default(),
             result: Nil,
-            txn: PhantomData::default()
         }
     }
 }
 
 #[derive(Debug)]
-pub struct Access<'db, Db, P, Txn, R> {
+pub struct AccessMany<'db, Db, Txn, R> {
     db: &'db Db,
-    path: P,
     txn: PhantomData<Txn>,
     result: R,
+}
+
+pub trait ExecuteMany<Txn> {
+    type Result: HList;
+    fn execute(self, txn: &mut Txn) -> Self::Result;
+}
+
+impl<Txn> ExecuteMany<Txn> for Nil {
+    type Result = Nil;
+    fn execute(self, _txn: &mut Txn) -> Nil {
+        Nil
+    }
+}
+
+impl<Txn, P, R, L> ExecuteMany<Txn> for Cons<(P, R), L> where
+    P: Chain,
+    R: Executable<Txn>,
+    L: ExecuteMany<Txn>
+{
+    type Result = Cons<<R as Executable<Txn>>::Result, <L as ExecuteMany<Txn>>::Result>;
+    fn execute(self, txn: &mut Txn) -> Self::Result {
+        let (path, res) = self.0;
+        let rest = self.1;
+
+        let path = Chain::collect(path).into_bytes();
+        let res = res.execute(txn, &path);
+        let rest = rest.execute(txn);
+        Cons(res, rest)
+    }
+}
+
+impl<'db, Db, Txn, R> AccessMany<'db, Db, Txn, R> {
+    fn access<P: Chain>(self, path: P) -> Access<'db, Db, P, Txn, Nil, R> {
+        Access {
+            path,
+            result: Nil,
+            parent: self
+        }
+    }
+
+    fn execute(self) -> R::Result where
+        R: ExecuteMany<Txn>,
+        Db: Database<'db>,
+        Txn: Corresponds<'db, Db>,
+    {
+        let mut txn = Txn::create(self.db);
+        self.result.execute(&mut txn)
+    }
+}
+
+#[derive(Debug)]
+pub struct Access<'db, Db, P, Txn, R, ParentRes> {
+    path: P,
+    result: R,
+    parent: AccessMany<'db, Db, Txn, ParentRes>
 }
 
 pub trait Lazy<Txn> {
@@ -115,17 +168,21 @@ macro_rules! returns {
             // Set new Txn
             <Self as AccessImpl<'db, Db, P, Txn, R>>::$txn,
             // Append $res to return type
-            <R as Append<$res>>::Result
+            <R as Append<$res>>::Result,
+            // Leave ParentRes as is
+            ParentRes
         >
     };
     ($this:expr => $lazy:expr) => {
         match $this {
             this => Access {
-                // Not changed
-                db: this.db,
                 path: this.path,
-                // Set new txn,
-                txn: PhantomData::default(),
+                parent: AccessMany {
+                    db: this.parent.db,
+                    result: this.parent.result,
+                    // Set new txn
+                    txn: PhantomData::default(),
+                },
                 // Append $lazy to result
                 result: this.result.append($lazy),
             }
@@ -162,7 +219,7 @@ lazy!(
     }
 );
 
-impl<'db, Db, P, Txn, R> Access<'db, Db, P, Txn, R> where
+impl<'db, Db, P, Txn, R, ParentRes> Access<'db, Db, P, Txn, R, ParentRes> where
     Db: Database<'db>,
     P: Chain,
     Txn: Corresponds<'db, Db>,
@@ -187,21 +244,40 @@ impl<'db, Db, P, Txn, R> Access<'db, Db, P, Txn, R> where
         })
     }
 
-    pub fn remove<V>(self) -> returns!(RwTxn => LazyRemove) where
-        R: Append<LazyRemove>
+    pub fn remove(self) -> returns!(RwTxn => LazyRemove)
+        where R: Append<LazyRemove>
     {
         returns!(self => LazyRemove {})
     }
 
-    pub fn execute(self) -> R::Result {
-        let mut txn = Txn::create(self.db);
-        let path = Chain::collect(self.path).into_bytes();
-        self.result.execute(&mut txn, &path)
+    pub fn done(self) -> AccessMany<'db, Db, Txn, <ParentRes as Append<(P, R)>>::Result>
+        where ParentRes: Append<(P, R)>
+    {
+        AccessMany {
+            db: self.parent.db,
+            txn: self.parent.txn,
+            result: self.parent.result.append((self.path, self.result))
+        }
+    }
+
+    pub fn access<NewP: Chain>(self, path: NewP) -> Access<'db, Db, NewP, Txn, Nil, <ParentRes as Append<(P, R)>>::Result>
+        where ParentRes: Append<(P, R)>
+    {
+        self.done().access(path)
+    }
+
+    pub fn execute(self) -> <<ParentRes as Append<(P, R)>>::Result as ExecuteMany<Txn>>::Result where
+        ParentRes: Append<(P, R)>,
+        <ParentRes as Append<(P, R)>>::Result: ExecuteMany<Txn>,
+        Db: Database<'db>,
+        Txn: Corresponds<'db, Db>,
+    {
+        self.done().execute()
     }
 }
 
 // We can upgrade from NoTxn to Ro<Db> and from Ro<Db> to Rw<Db>, but we never will downgrade
-impl<'db, Db, P, R> AccessImpl<'db, Db, P, NoTxn, R> for Access<'db, Db, P, NoTxn, R> where
+impl<'db, Db, P, R, ParentRes> AccessImpl<'db, Db, P, NoTxn, R> for Access<'db, Db, P, NoTxn, R, ParentRes> where
     Db: Database<'db>,
     P: Chain,
     NoTxn: Corresponds<'db, Db>,
@@ -212,7 +288,7 @@ impl<'db, Db, P, R> AccessImpl<'db, Db, P, NoTxn, R> for Access<'db, Db, P, NoTx
     type RwTxn = Rw<'db, Db>;
 }
 
-impl<'db, Db, P, R> AccessImpl<'db, Db, P, Ro<'db, Db>, R> for Access<'db, Db, P, Ro<'db, Db>, R> where
+impl<'db, Db, P, R, ParentRes> AccessImpl<'db, Db, P, Ro<'db, Db>, R> for Access<'db, Db, P, Ro<'db, Db>, R, ParentRes> where
     Db: Database<'db>,
     P: Chain,
     Ro<'db, Db>: Corresponds<'db, Db>,
@@ -223,7 +299,7 @@ impl<'db, Db, P, R> AccessImpl<'db, Db, P, Ro<'db, Db>, R> for Access<'db, Db, P
     type RwTxn = Rw<'db, Db>;
 }
 
-impl<'db, Db, P, R> AccessImpl<'db, Db, P, Rw<'db, Db>, R> for Access<'db, Db, P, Rw<'db, Db>, R> where
+impl<'db, Db, P, R, ParentRes> AccessImpl<'db, Db, P, Rw<'db, Db>, R> for Access<'db, Db, P, Rw<'db, Db>, R, ParentRes> where
     Db: Database<'db>,
     P: Chain,
     Rw<'db, Db>: Corresponds<'db, Db>,
@@ -267,7 +343,7 @@ mod tests {
     }
 
     assert_impl!(for<'db> where()
-        Access<'db, PanicDb, HList![Root, Foo], NoTxn, Nil>
+        Access<'db, PanicDb, HList![Root, Foo], NoTxn, Nil, Nil>
             : AccessImpl<'db, PanicDb, HList![Root, Foo], NoTxn, Nil>);
     assert_impl!(for<'db> where()
         HList![LazyGet<i32>, LazySet<i32>]: Executable<Rw<'db, PanicDb>>);
@@ -275,13 +351,26 @@ mod tests {
     // We are interested only in type checking this code, so there is no #[test] attribute
     fn get_and_set_ty() {
         use crate::hlist::UnwrapAll;
-        let _: HList![i32, ()] = PanicDb.access(hlist![Root, Foo])
-            .get::<i32>()
-            .set(0_i32)
+        let _: HList![
+            HList![i32, ()], // Foo: get, set
+            HList![(), String, ()] // Bar: set, get, remove
+        ] = PanicDb.lazy()
+            .access(hlist![Root, Foo])
+                .get::<i32>()
+                .set(0_i32)
+            .access(hlist![Root, Bar])
+                .set("Hello".to_string())
+                .get::<String>()
+                .remove()
             .execute()
             .unwrap_all();
     }
 
-    path!(struct Foo[i32];);
-    path!(Root -> Foo);
+    path!(
+        struct Foo[i32];
+        struct Bar[String];
+    );
+    path!(Root -> {Foo}
+               -> {Bar}
+         );
 }

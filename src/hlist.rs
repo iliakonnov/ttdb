@@ -90,6 +90,15 @@ impl<T, E: std::fmt::Debug, L: UnwrapAll> UnwrapAll for Cons<Result<T, E>, L> {
     }
 }
 
+impl<T: UnwrapAll, L: UnwrapAll> UnwrapAll for Cons<T, L> {
+    type Good = Cons<T::Good, L::Good>;
+    fn unwrap_all(self) -> Self::Good {
+        let unwrapped = self.0.unwrap_all();
+        let rem = self.1.unwrap_all();
+        Cons(unwrapped, rem)
+    }
+}
+
 // I like the idea, but this code does not compiling:
 //     error[E0275]: overflow evaluating the requirement `hlist::Nil: hlist::CreateHList<V, {N-1}>`
 // Increasing #![recursion_limit] does not help, so I just left it commented.
